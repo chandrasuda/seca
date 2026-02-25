@@ -1,0 +1,46 @@
+#!/usr/bin/env python3
+"""Ablation sweep over Omni-Teacher α/β/γ → logs/ablation_results.csv."""
+from __future__ import annotations
+import argparse, copy, csv, itertools, logging, random
+from pathlib import Path
+import yaml, torch, numpy as np
+from seca.data.loader import load_problems
+from seca.train.trainer import Trainer
+from seca.eval.metrics import evaluate_problems
+
+ALPHAS = [0.2, 0.4, 0.6]
+BETAS  = [0.2, 0.4, 0.6]
+GAMMAS = [0.1, 0.2, 0.3]
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--config", default="configs/default.yaml")
+    args = p.parse_args()
+    with open(args.config) as f:
+        base = yaml.safe_load(f)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(message)s")
+    random.seed(base["seed"]); np.random.seed(base["seed"]); torch.manual_seed(base["seed"])
+    problems = load_problems(base["data"])
+
+    results = []
+    for i, (a, b, g) in enumerate(itertools.product(ALPHAS, BETAS, GAMMAS)):
+        logging.info(f"Ablation {i+1}/{len(ALPHAS)*len(BETAS)*len(GAMMAS)}: α={a} β={b} γ={g}")
+        cfg = copy.deepcopy(base)
+        cfg["training"]["mode"] = "omni"
+        cfg["omni"]["alpha_sdft"], cfg["omni"]["beta_sdpo"], cfg["omni"]["gamma_nll"] = a, b, g
+        cfg["eval"]["log_dir"] = f"logs/ablation/a{a}_b{b}_g{g}/"
+        trainer = Trainer(cfg)
+        hist = trainer.train(problems)
+        ev = evaluate_problems(trainer.model, problems[:50], n_samples=5, k_values=[1, 5])
+        results.append({"alpha": a, "beta": b, "gamma": g, **ev,
+                         "final_loss": hist[-1]["loss"] if hist else 0})
+
+    out = Path("logs/ablation_results.csv"); out.parent.mkdir(parents=True, exist_ok=True)
+    with open(out, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=results[0].keys()); w.writeheader(); w.writerows(results)
+    print(f"✓ {out}")
+
+
+if __name__ == "__main__":
+    main()

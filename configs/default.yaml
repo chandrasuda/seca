@@ -1,44 +1,40 @@
-# ── SECA: Selective Externalization for Continual Adaptation ──
+# Omni-Teacher: SDFT + SDPO for Code Generation
 
 model:
-  name: "meta-llama/Llama-3.2-1B-Instruct"   # base LM
+  name: "deepseek-ai/deepseek-coder-1.3b-instruct"
   dtype: "bfloat16"
-  max_len: 1024
+  max_len: 2048
 
-sdft:
-  num_on_policy_samples: 4        # K rollouts per demo
-  temperature_student: 1.0
-  temperature_teacher: 0.7
-  kl_weight: 0.1                  # β for reverse-KL term
+training:
+  mode: "omni"                # sft | sdft | sdpo | omni | grpo
   lr: 1e-5
-  epochs_per_episode: 1
+  num_epochs: 3
+  num_samples: 4              # K on-policy rollouts per problem
   max_grad_norm: 1.0
+  checkpoint_dir: "checkpoints/"
+  eval_every_epoch: 1
 
-router:
-  hidden_dim: 256
-  feature_dim: null               # auto from model hidden size
-  lr: 3e-4
-  baseline_ema: 0.99              # REINFORCE variance reduction
+# Shared distillation temperatures (used by sdft, sdpo, omni sub-operators)
+sdft: { temperature_student: 1.0, temperature_teacher: 0.7, kl_weight: 0.5 }
+sdpo: { temperature_student: 1.0, temperature_teacher: 0.7, kl_weight: 0.5 }
 
-reward:
-  lambda_forget: 1.0              # forgetting penalty weight
-  mu_cost: 0.01                   # update cost penalty
-
-memory:
-  embedding_model: "BAAI/bge-small-en-v1.5"
-  top_k: 5
-  chunk_size: 256
-  chunk_overlap: 32
+omni:
+  alpha_sdft: 0.4             # L = α·KL_sdft + β·KL_sdpo + γ·NLL_gold
+  beta_sdpo: 0.4
+  gamma_nll: 0.2
+  sdft: { temperature_student: 1.0, temperature_teacher: 0.7, kl_weight: 1.0 }
+  sdpo: { temperature_student: 1.0, temperature_teacher: 0.7, kl_weight: 1.0 }
 
 data:
-  skills_path: "data/skills/"
-  knowledge_path: "data/knowledge/"
-  anchor_path: "data/anchor/"
-  stream_length: 100
-  skill_ratio: 0.5                # fraction of skill episodes
+  dataset: "apps"             # apps | livecodebench | kernelbench
+  split: "test"
+  difficulty: "introductory"  # apps only
+  max_problems: 100
 
 eval:
-  anchor_eval_every: 5            # evaluate anchor suite every N episodes
+  n_samples: 10
+  k_values: [1, 5, 10]
+  temperature: 0.8
   log_dir: "logs/"
 
 seed: 42

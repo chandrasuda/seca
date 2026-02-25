@@ -1,45 +1,44 @@
 #!/usr/bin/env python3
-"""Standalone evaluation: load a run log and compute summary metrics."""
+"""Evaluate a checkpoint on code-generation problems (Pass@k)."""
 from __future__ import annotations
-
-import argparse
-import json
+import argparse, json, logging, random
 from pathlib import Path
-
-from seca.eval.metrics import forgetting
+import yaml, torch, numpy as np
+from seca.models.base import BaseModel
+from seca.eval.metrics import evaluate_problems
+from seca.data.loader import load_problems
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Analyse a SECA run log")
-    parser.add_argument("log", type=str, help="Path to run_log.jsonl")
-    args = parser.parse_args()
+    p = argparse.ArgumentParser()
+    p.add_argument("--config", default="configs/default.yaml")
+    p.add_argument("--checkpoint", default=None)
+    p.add_argument("--seed", type=int, default=None)
+    args = p.parse_args()
 
-    entries = [json.loads(l) for l in Path(args.log).read_text().splitlines() if l.strip()]
+    with open(args.config) as f:
+        cfg = yaml.safe_load(f)
+    if args.seed: cfg["seed"] = args.seed
+    random.seed(cfg["seed"]); np.random.seed(cfg["seed"]); torch.manual_seed(cfg["seed"])
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(message)s")
 
-    # ── per-type performance ──
-    by_type: dict[str, list[float]] = {}
-    for e in entries:
-        t = e.get("etype", e.get("baseline", "?"))
-        by_type.setdefault(t, []).append(e["new_perf"])
+    model = BaseModel(**cfg["model"])
+    if args.checkpoint:
+        model.model.load_state_dict(torch.load(args.checkpoint, map_location="cpu"))
 
-    print("── New-episode performance ──")
-    for t, scores in by_type.items():
-        print(f"  {t:12s}  mean={sum(scores)/len(scores):.4f}  n={len(scores)}")
+    problems = load_problems(cfg["data"])
+    ec = cfg["eval"]
+    results = evaluate_problems(model, problems, n_samples=ec.get("n_samples", 10),
+                                k_values=ec.get("k_values", [1, 5, 10]),
+                                temperature=ec.get("temperature", 0.8))
 
-    # ── retention ──
-    anchor_scores = [e["anchor_perf"] for e in entries if "anchor_perf" in e]
-    f = forgetting(anchor_scores)
-    print(f"\n── Retention ──")
-    print(f"  max_drop = {f['max_drop']:.4f}")
-    print(f"  mean_auc = {f['auc']:.4f}")
-
-    # ── routing stats (SECA / heuristic only) ──
-    actions = [e.get("action") for e in entries if "action" in e]
-    if actions:
-        n_up = sum(1 for a in actions if a == "UPDATE")
-        n_st = sum(1 for a in actions if a == "STORE")
-        print(f"\n── Routing ──")
-        print(f"  UPDATE = {n_up}  STORE = {n_st}  total = {len(actions)}")
+    print("\n══ Results ══")
+    for k, v in results.items():
+        print(f"  {k:25s}  {v:.4f}" if isinstance(v, float) else f"  {k:25s}  {v}")
+    out = Path(ec["log_dir"]) / "eval_results.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    json.dump(results, out.open("w"), indent=2)
+    print(f"Saved → {out}")
 
 
 if __name__ == "__main__":

@@ -1,1 +1,1 @@
-"""SECA – Selective Externalization for Continual Adaptation."""
+"""Omni-Teacher: Execution-Grounded Self-Distillation (SDFT + SDPO)."""

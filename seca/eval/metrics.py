@@ -1,104 +1,51 @@
-"""Evaluation metrics for SECA.
-
-Covers:
-  - Exact match (knowledge QA)
-  - Fuzzy / token-F1 match
-  - Anchor-suite aggregate (retention / forgetting)
-"""
+"""Evaluation: Pass@k (unbiased) and execution success rate."""
 from __future__ import annotations
-
-import re
-import string
-from collections import Counter
-from typing import Optional
-
+import math
 import torch
-
-from seca.data.episode import Episode, EpisodeType
-
-
-# ── public API ──
-
-def evaluate_episode(
-    model,             # BaseModel
-    memory,            # VectorStore | None
-    episode: Episode,
-) -> float:
-    """Score the model on a single episode (0-1)."""
-    prediction = _get_prediction(model, memory, episode)
-    if episode.etype == EpisodeType.KNOWLEDGE:
-        return exact_match(prediction, episode.reference)
-    else:
-        return token_f1(prediction, episode.reference)
+from seca.data.problem import CodeProblem
+from seca.sandbox.executor import execute_code
 
 
-def evaluate_anchor_suite(
-    model,
-    memory,
-    anchor_episodes: list[Episode],
-) -> float:
-    """Mean score across all anchor episodes."""
-    if not anchor_episodes:
-        return 0.0
-    scores = [evaluate_episode(model, memory, ep) for ep in anchor_episodes]
-    return sum(scores) / len(scores)
-
-
-# ── scoring functions ──
-
-def exact_match(pred: str, gold: str) -> float:
-    return float(_normalise(pred) == _normalise(gold))
-
-
-def token_f1(pred: str, gold: str) -> float:
-    pred_toks = _normalise(pred).split()
-    gold_toks = _normalise(gold).split()
-    if not gold_toks:
-        return float(not pred_toks)
-    common = Counter(pred_toks) & Counter(gold_toks)
-    num_same = sum(common.values())
-    if num_same == 0:
-        return 0.0
-    p = num_same / len(pred_toks) if pred_toks else 0.0
-    r = num_same / len(gold_toks)
-    return 2 * p * r / (p + r) if (p + r) > 0 else 0.0
-
-
-# ── retention helpers ──
-
-def forgetting(anchor_scores: list[float]) -> dict:
-    """Compute forgetting metrics over time-series of anchor scores.
-
-    Returns max_drop and area_under_curve (higher AUC = better retention).
-    """
-    if not anchor_scores:
-        return {"max_drop": 0.0, "auc": 0.0}
-    peak = anchor_scores[0]
-    drops = [peak - s for s in anchor_scores]
-    return {
-        "max_drop": max(drops),
-        "auc": sum(anchor_scores) / len(anchor_scores),
-    }
-
-
-# ── internal helpers ──
-
-def _normalise(text: str) -> str:
-    """Lowercase, strip punctuation / articles / extra whitespace."""
-    text = text.lower()
-    text = re.sub(r"\b(a|an|the)\b", " ", text)
-    text = text.translate(str.maketrans("", "", string.punctuation))
-    return " ".join(text.split())
+def pass_at_k(n: int, c: int, k: int) -> float:
+    """Unbiased Pass@k estimator (Chen et al., 2021)."""
+    if n - c < k:
+        return 1.0
+    return 1.0 - math.comb(n - c, k) / math.comb(n, k)
 
 
 @torch.no_grad()
-def _get_prediction(model, memory, episode: Episode) -> str:
-    """Generate model prediction, optionally augmented with retrieval."""
-    prompt = episode.prompt
-    if memory is not None and len(memory) > 0:
-        docs = memory.retrieve(prompt)
-        if docs:
-            ctx = "\n".join(f"- {d}" for d in docs)
-            prompt = f"Context:\n{ctx}\n\nQuestion: {prompt}\nAnswer:"
-    outputs = model.generate([prompt], max_new_tokens=128, temperature=0.0, do_sample=False)
-    return outputs[0]
+def evaluate_problems(model, problems: list[CodeProblem], n_samples: int = 10,
+                      k_values: list[int] | None = None, temperature: float = 0.8,
+                      timeout: float = 10.0) -> dict:
+    k_values = k_values or [1, 5, 10]
+    all_pass_at: dict[int, list[float]] = {k: [] for k in k_values}
+    total_pass_rate = 0.0
+
+    for problem in problems:
+        prompts = [problem.format_prompt()] * n_samples
+        completions = model.generate(
+            prompts, temperature=temperature, do_sample=True,
+        )
+
+        # execute each completion
+        n_correct = 0
+        problem_pass_rates: list[float] = []
+        for code in completions:
+            fb = execute_code(code, problem, timeout=timeout)
+            if fb.all_passed:
+                n_correct += 1
+            problem_pass_rates.append(fb.pass_rate)
+
+        total_pass_rate += sum(problem_pass_rates) / len(problem_pass_rates)
+
+        for k in k_values:
+            all_pass_at[k].append(pass_at_k(n_samples, n_correct, min(k, n_samples)))
+
+    n = len(problems)
+    results = {
+        f"pass@{k}": sum(v) / n if n else 0.0
+        for k, v in all_pass_at.items()
+    }
+    results["mean_test_pass_rate"] = total_pass_rate / n if n else 0.0
+    results["n_problems"] = n
+    return results
