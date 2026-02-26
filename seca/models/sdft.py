@@ -99,7 +99,10 @@ class SDFTOperator:
             losses.append(kl)
 
         if not losses:
-            return torch.tensor(0.0, device=model.device), {"sdft_kl": 0.0}
+            # Return loss with grad_fn so backward() doesn't raise. Case when all
+            # completions have completion_len <= 0; dummy has zero gradient.
+            dummy = model.model.get_input_embeddings().weight[0, 0] * 0.0
+            return dummy, {"sdft_kl": 0.0}
 
         total_kl = sum(losses) / len(losses)
         return self.kl_weight * total_kl, {"sdft_kl": total_kl.item()}
