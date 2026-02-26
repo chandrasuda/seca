@@ -1,6 +1,12 @@
 """Shared data loading — single entry point for all datasets."""
 from __future__ import annotations
+import os
+import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from seca.data.problem import CodeProblem
+
+# Each worker just waits on a subprocess (I/O-bound), so heavy oversub is fine.
+_DEFAULT_WORKERS = 500
 
 
 def load_problems(data_cfg: dict) -> list[CodeProblem]:
@@ -40,15 +46,49 @@ def load_problems(data_cfg: dict) -> list[CodeProblem]:
         raise ValueError(f"Unknown dataset: {ds}. Use: apps | livecodebench | kernelbench")
 
 
-def _filter_bad_gold(problems: list[CodeProblem]) -> list[CodeProblem]:
-    """Drop problems whose gold solution fails its own tests."""
+def _check_one(problem: CodeProblem) -> tuple[CodeProblem, bool]:
+    """Run one problem's gold solution against its tests. Returns (problem, passed)."""
     from seca.sandbox.executor import execute_code
+    fb = execute_code(problem.gold_solution, problem, extract=False)
+    return (problem, fb.all_passed)
+
+
+def _filter_bad_gold(
+    problems: list[CodeProblem],
+    max_workers: int | None = None,
+) -> list[CodeProblem]:
+    """Drop problems whose gold solution fails its own tests (parallel)."""
+    workers = max_workers or _DEFAULT_WORKERS
+
+    # Pre-filter obviously unusable problems (no gold / no tests)
+    candidates = [p for p in problems if p.gold_solution.strip() and p.test_cases]
+    total = len(candidates)
+    print(f"[filter_bad_gold] Testing {total} gold solutions with {workers} workers …")
+    sys.stdout.flush()
 
     kept: list[CodeProblem] = []
-    for p in problems:
-        if not p.gold_solution.strip() or not p.test_cases:
-            continue
-        fb = execute_code(p.gold_solution, p, extract=False)
-        if fb.all_passed:
-            kept.append(p)
-    return kept
+    done = 0
+    passed = 0
+    failed = 0
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_check_one, p): p for p in candidates}
+        for fut in as_completed(futures):
+            done += 1
+            prob, ok = fut.result()
+            if ok:
+                kept.append(prob)
+                passed += 1
+            else:
+                failed += 1
+            if done % 10 == 0 or done == total:
+                print(f"  [{done}/{total}] ✓ {passed}  ✗ {failed}")
+                sys.stdout.flush()
+
+    # Preserve original ordering
+    kept_ids = {id(p) for p in kept}
+    kept_ordered = [p for p in candidates if id(p) in kept_ids]
+
+    print(f"[filter_bad_gold] Kept {len(kept_ordered)}/{total} problems.")
+    sys.stdout.flush()
+    return kept_ordered

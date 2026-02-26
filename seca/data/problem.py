@@ -19,6 +19,7 @@ class CodeProblem:
     starter_code: str = ""
     difficulty: str = ""
     source: str = ""
+    fn_name: str = ""
     meta: dict[str, Any] = field(default_factory=dict)
 
     def format_prompt(self) -> str:
