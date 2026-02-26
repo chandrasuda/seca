@@ -50,8 +50,8 @@ class Trainer:
         )
 
         train_cfg = cfg["training"]
-        lr = train_cfg.get("lr", 5e-7)
-        weight_decay = train_cfg.get("weight_decay", 0.01)
+        lr = float(train_cfg.get("lr", 5e-7))
+        weight_decay = float(train_cfg.get("weight_decay", 0.01))
         self.optimizer = AdamW(
             self.model.model.parameters(), lr=lr, weight_decay=weight_decay
         )

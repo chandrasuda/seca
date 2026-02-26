@@ -318,14 +318,9 @@ def main() -> None:
     print(f"Model:   {cfg['model']['name']}")
 
     # Load a small slice of problems (diagnostics only need a couple)
-    data_cfg = cfg.get("data", {})
-    problems = load_problems(
-        dataset=data_cfg.get("dataset", "apps"),
-        split=data_cfg.get("split", "test"),
-        difficulty=data_cfg.get("difficulty", "introductory"),
-        max_problems=5,
-        filter_bad_gold=data_cfg.get("filter_bad_gold", True),
-    )
+    data_cfg = dict(cfg.get("data", {}))
+    data_cfg["max_problems"] = 5
+    problems = load_problems(data_cfg)
     if not problems:
         print("ERROR: no problems loaded — check data config.")
         sys.exit(1)

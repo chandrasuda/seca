@@ -2,15 +2,32 @@
 
 vLLM handles fast rollout generation; HuggingFace handles forward passes and gradients.
 Weights are synced from HF to vLLM after each optimizer step.
+
+IMPORTANT: enforce_eager=True must be set — CUDA graphs capture fixed weights and
+will silently ignore updates without this flag.
+
+IMPORTANT: VLLM_ENABLE_V1_MULTIPROCESSING=0 must be set so EngineCore runs in-process,
+enabling direct model_executor access for weight sync. In multiprocess mode the model
+lives in a subprocess and direct attribute access cannot work.
 """
 from __future__ import annotations
+
 import copy
 import logging
+import os
 from typing import Any
+
+# Force vLLM V1 engine to run in-process. Must be set before vLLM is imported.
+os.environ.setdefault("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from vllm import LLM, SamplingParams
+
+from seca.models.vllm_weight_sync import (
+    _assert_tp1,
+    _sync_weights_via_direct_access,
+)
 
 log = logging.getLogger(__name__)
 
@@ -32,13 +49,14 @@ class BaseModel:
         vllm_cfg = vllm_cfg or {}
 
         # 1. Load vLLM first (pre-allocates GPU memory)
+        # enforce_eager=True is required for weight sync — CUDA graphs ignore updates
         log.info("Loading vLLM engine for inference...")
         self.llm = LLM(
             model=name,
             dtype=dtype,
             gpu_memory_utilization=vllm_cfg.get("gpu_memory_utilization", 0.4),
             max_model_len=vllm_cfg.get("max_model_len", max_len),
-            enforce_eager=vllm_cfg.get("enforce_eager", True),
+            enforce_eager=True,  # Must be True for HF→vLLM weight sync to take effect
         )
         log.info("vLLM engine loaded.")
 
@@ -54,6 +72,8 @@ class BaseModel:
             device_map="auto",
             trust_remote_code=True,
         )
+        self.model.config.use_cache = False  # required for gradient checkpointing
+        self.model.gradient_checkpointing_enable()
         self.model.train()
         log.info("HuggingFace model loaded.")
 
@@ -77,27 +97,14 @@ class BaseModel:
         return [o.outputs[0].text for o in outputs]
 
     def sync_vllm_weights(self) -> None:
-        """Push updated training weights into vLLM. Call after optimizer.step()."""
+        """Push updated training weights into vLLM. Call after optimizer.step().
+
+        Requires VLLM_ENABLE_V1_MULTIPROCESSING=0 and TP=1 for direct model access.
+        """
+        _assert_tp1(self.llm)
         state_dict = {k: v.cpu() for k, v in self.model.state_dict().items()}
-        try:
-            llm_model = (
-                self.llm.llm_engine.model_executor.driver_worker.model_runner.model
-            )
-            llm_model.load_weights(list(state_dict.items()))
-        except AttributeError as e:
-            # vLLM API may vary by version; try alternative path
-            log.warning("Primary weight sync path failed (%s), trying fallback", e)
-            try:
-                workers = self.llm.llm_engine.workers
-                if workers:
-                    worker = workers[0]
-                    if hasattr(worker, "model_runner") and worker.model_runner is not None:
-                        model = getattr(worker.model_runner, "model", None)
-                        if model is not None and hasattr(model, "load_weights"):
-                            model.load_weights(list(state_dict.items()))
-            except Exception as e2:
-                log.error("Weight sync failed: %s", e2)
-                raise
+        state_dict_items = list(state_dict.items())
+        _sync_weights_via_direct_access(self.llm, state_dict_items)
 
     def snapshot(self) -> BaseModel:
         """Return a frozen copy of the HF model for use as EMA teacher.

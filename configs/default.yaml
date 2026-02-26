@@ -8,7 +8,7 @@ model:
 
 # vLLM inference engine settings
 vllm:
-  gpu_memory_utilization: 0.4   # leave room for training engine
+  gpu_memory_utilization: 0.3   # lower to leave more room for HF training (avoids OOM)
   max_model_len: 4096
   enforce_eager: true           # avoid CUDA graph memory fragmentation
 
@@ -16,15 +16,15 @@ vllm:
 inference:
   temperature: 1.0
   top_p: 0.95
-  max_new_tokens: 512
+  max_new_tokens: 256           # shorter completions reduce backward-pass memory
 
 training:
   mode: "omni"                  # sft | sdft | sdpo | omni | grpo
-  lr: 5e-7                      # lower for 1.7B (paper uses 1e-6 for 8B)
+  lr: 5.0e-7                    # lower for 1.7B (paper uses 1e-6 for 8B); must have decimal for YAML float parsing
   weight_decay: 0.01
   num_epochs: 3
   num_samples: 16               # G rollouts per problem (SDPO paper uses 8)
-  mini_batch_size: 4            # gradient accumulation chunk size
+  mini_batch_size: 1            # 1 = minimal memory during backward; increase if OOM resolved
   max_grad_norm: 1.0
   ema_alpha: 0.005              # EMA: ϕ ← 0.995·ϕ + 0.005·θ
   checkpoint_dir: "checkpoints/"

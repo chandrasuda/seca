@@ -8,6 +8,7 @@ version = "0.2.0"
 description = "Omni-Teacher: Execution-Grounded Self-Distillation for Code Generation (SDFT + SDPO)"
 requires-python = ">=3.10"
 dependencies = [
+    "packaging",
     "torch>=2.1,<2.5",
     "transformers>=4.40",
     "datasets>=2.18",
@@ -18,6 +19,9 @@ dependencies = [
     "trl>=0.16",
     "accelerate>=1.2",
 ]
+
+[project.optional-dependencies]
+modal = ["modal"]
 
 [tool.setuptools.packages.find]
 include = ["seca*"]

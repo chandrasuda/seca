@@ -12,8 +12,13 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import random
 from pathlib import Path
+
+# Must be set before vLLM is imported so EngineCore runs in-process,
+# which is required for sync_vllm_weights to reach the model runner directly.
+os.environ.setdefault("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
 
 import numpy as np
 import torch
@@ -127,8 +132,10 @@ def main() -> None:
     )
     vllm_cfg = cfg.get("vllm", {})
     inf_cfg = cfg.get("inference", {})
-    lr = cfg["training"]["lr"]
-    lr_val = float(lr) if isinstance(lr, str) else lr
+    # PyYAML parses `5e-7` (no decimal point) as a string. Normalise to float here
+    # and write back so Trainer always receives a proper numeric value.
+    lr_val = float(cfg["training"]["lr"])
+    cfg["training"]["lr"] = lr_val
     log.info(
         "Training: mode=%s model=%s lr=%.0e epochs=%d K=%d mini_batch=%d",
         cfg["training"]["mode"],
