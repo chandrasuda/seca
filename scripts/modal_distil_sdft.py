@@ -130,6 +130,7 @@ def run_sdft_training(
     split: str = "train",
     difficulty: str | None = None,
     max_problems: int | None = None,
+    data_file: str | None = None,
     epochs: int = 1,
     lr: float = 1e-5,
     num_generations: int = 8,
@@ -179,6 +180,14 @@ def run_sdft_training(
         "--output-dir", ckpt_dir,
         "--seed", str(seed),
     ]
+    resolved_data_file = data_file
+    if resolved_data_file is None:
+        resolved_data_file = (
+            "/workspace/leetcode/leetcode_train_apps_harness_fmt.jsonl"
+            if split == "train"
+            else "/workspace/leetcode/leetcode_test_apps_harness_fmt.jsonl"
+        )
+    cmd.extend(["--data-file", resolved_data_file])
     if difficulty is not None:
         cmd.extend(["--difficulty", difficulty])
     if max_problems is not None:
@@ -295,6 +304,7 @@ def main(
     split: str = "train",
     difficulty: str | None = None,
     max_problems: int | None = None,
+    data_file: str | None = None,
     epochs: int = 1,
     lr: float = 1e-5,
     num_generations: int = 8,
@@ -331,6 +341,7 @@ def main(
             split=split,
             difficulty=difficulty,
             max_problems=max_problems,
+            data_file=data_file,
             epochs=epochs,
             lr=lr,
             num_generations=num_generations,

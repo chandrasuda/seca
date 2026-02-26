@@ -115,6 +115,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Cap on number of APPS problems to use (None = all with gold + tests)",
     )
+    p.add_argument(
+        "--data-file",
+        type=str,
+        default=None,
+        help="Optional JSONL path in APPS-compatible format (overrides split source)",
+    )
     # Training (matched to SDFT paper's skill-learning settings)
     p.add_argument(
         "--epochs",
@@ -195,6 +201,7 @@ def main() -> None:
         split=args.split,
         difficulty=args.difficulty,
         max_problems=args.max_problems,
+        data_file=args.data_file,
     )
     log.info("Loaded %d APPS problems with gold solutions + test cases", len(problems))
 

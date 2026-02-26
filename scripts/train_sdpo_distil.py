@@ -304,6 +304,12 @@ def parse_args() -> argparse.Namespace:
                    help="APPS difficulty filter: introductory | interview | competition")
     p.add_argument("--max-problems", type=int, default=None,
                    help="Cap on number of APPS problems (None = all)")
+    p.add_argument(
+        "--data-file",
+        type=str,
+        default=None,
+        help="Optional JSONL path in APPS-compatible format (overrides split source)",
+    )
     # Training
     p.add_argument("--epochs", type=int, default=1)
     p.add_argument("--lr", type=float, default=1e-5,
@@ -389,6 +395,7 @@ def main() -> None:
         split=args.split,
         difficulty=args.difficulty,
         max_problems=args.max_problems,
+        data_file=args.data_file,
     )
     log.info("Loaded %d APPS problems with gold solutions + test cases", len(problems))
 
@@ -471,6 +478,8 @@ def main() -> None:
         log.info("=== Epoch %d/%d ===", epoch + 1, args.epochs)
         epoch_losses: list[float] = []
         epoch_pass_rates: list[float] = []
+        epoch_tests_passed: list[int] = []
+        epoch_tests_total: list[int] = []
 
         for prob_idx, problem in enumerate(problems):
             log.info("Processing problem %d/%d ...", prob_idx + 1, len(problems))
@@ -543,10 +552,19 @@ def main() -> None:
 
             n_passed = sum(1 for fb in fb_list if fb.all_passed)
             mean_pass_rate = sum(fb.pass_rate for fb in fb_list) / len(fb_list)
+            tests_passed = sum(
+                sum(1 for r in fb.results if r.passed) for fb in fb_list
+            )
+            tests_total = sum(len(fb.results) for fb in fb_list)
+            test_pass_rate = (tests_passed / tests_total) if tests_total else 0.0
             epoch_pass_rates.append(mean_pass_rate)
+            epoch_tests_passed.append(tests_passed)
+            epoch_tests_total.append(tests_total)
             log.info(
-                "  Sandbox done: %d/%d passed, mean_pass_rate=%.3f",
+                "  Sandbox done: %d/%d completions fully passed, "
+                "completion_mean_pass_rate=%.3f, test_pass_rate=%d/%d=%.3f",
                 n_passed, len(fb_list), mean_pass_rate,
+                tests_passed, tests_total, test_pass_rate,
             )
 
             # ---- 4. Get old log probs for IS correction ----
@@ -703,11 +721,19 @@ def main() -> None:
                 recent = epoch_losses[-10:]
                 avg_loss = sum(recent) / max(len(recent), 1)
                 avg_pr = sum(epoch_pass_rates[-10:]) / max(len(epoch_pass_rates[-10:]), 1)
+                recent_tests_passed = sum(epoch_tests_passed[-10:])
+                recent_tests_total = sum(epoch_tests_total[-10:])
+                avg_test_pr = (
+                    recent_tests_passed / recent_tests_total
+                    if recent_tests_total else 0.0
+                )
                 log.info(
-                    "Epoch %d  %d/%d  loss=%.4f  pass_rate=%.3f  "
-                    "passed=%d/%d  valid_distil=%d/%d",
+                    "Epoch %d  %d/%d  loss=%.4f  completion_mean_pass_rate=%.3f  "
+                    "test_pass_rate=%.3f (%d/%d tests)  "
+                    "full_passed=%d/%d completions  valid_distil=%d/%d",
                     epoch + 1, prob_idx + 1, len(problems),
                     avg_loss, avg_pr,
+                    avg_test_pr, recent_tests_passed, recent_tests_total,
                     n_passed, args.num_generations,
                     n_valid, args.num_generations,
                 )
@@ -715,8 +741,11 @@ def main() -> None:
                     import wandb
                     wandb.log({
                         "train/loss": total_loss,
-                        "train/n_passed": n_passed,
-                        "train/mean_pass_rate": mean_pass_rate,
+                        "train/full_passed_completions": n_passed,
+                        "train/completion_mean_pass_rate": mean_pass_rate,
+                        "train/tests_passed": tests_passed,
+                        "train/tests_total": tests_total,
+                        "train/test_pass_rate": test_pass_rate,
                         "train/n_valid_distil": n_valid,
                         "train/lr": scheduler.get_last_lr()[0],
                         "global_step": global_step,
@@ -730,10 +759,15 @@ def main() -> None:
                 log.info("Checkpoint saved → %s", ckpt_path)
 
         log.info(
-            "Epoch %d complete | avg_loss=%.4f | avg_pass_rate=%.3f",
+            "Epoch %d complete | avg_loss=%.4f | completion_mean_pass_rate=%.3f | "
+            "test_pass_rate=%d/%d=%.3f",
             epoch + 1,
             sum(epoch_losses) / max(len(epoch_losses), 1),
             sum(epoch_pass_rates) / max(len(epoch_pass_rates), 1),
+            sum(epoch_tests_passed),
+            sum(epoch_tests_total),
+            (sum(epoch_tests_passed) / sum(epoch_tests_total))
+            if sum(epoch_tests_total) else 0.0,
         )
 
     # ------------------------------------------------------------------

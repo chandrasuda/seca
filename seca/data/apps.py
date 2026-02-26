@@ -1,6 +1,7 @@
 """APPS loader — local JSONL first, HuggingFace fallback."""
 from __future__ import annotations
 import json
+import re
 import sys
 from pathlib import Path
 from seca.data.problem import CodeProblem, TestCase
@@ -14,13 +15,30 @@ LOCAL_DIR = Path(__file__).resolve().parents[2] / "data_filtered"
 # Every split the HF repo actually contains.
 _ALL_SPLITS = ("train", "test")
 
+# Runtime helpers/APIs that our lightweight executor does not emulate yet.
+_UNSUPPORTED_LEETCODE_API_PATTERNS = (
+    r"\bisBadVersion\s*\(",
+    r"\bguess\s*\(",
+    r"\bknows\s*\(",
+    r"\bread4\s*\(",
+    r"\brand7\s*\(",
+    r"\bHtmlParser\b",
+    r"\bMountainArray\b",
+    r"\bBinaryMatrix\b",
+    r"\bSea\b",
+    r"\bArrayReader\b",
+    r"\bCustomFunction\b",
+    r"\bNestedInteger\b",
+)
+
 
 def load_apps(
     split: str = "test",
     difficulty: str | None = None,
     max_problems: int | None = None,
+    data_file: str | None = None,
 ) -> list[CodeProblem]:
-    rows = _load_rows(split, difficulty)
+    rows = _load_rows(split, difficulty, data_file=data_file)
     if max_problems:
         rows = rows[:max_problems]
 
@@ -34,6 +52,15 @@ def load_apps(
         # skip problems missing gold or tests — unusable for distillation
         if not gold.strip() or not tests:
             continue
+        if _should_skip_for_runtime_compat(row=row, io_raw=io_raw):
+            continue
+        meta: dict = {}
+        if row.get("entry_point"):
+            meta["leetcode_entry_point"] = row.get("entry_point")
+        if row.get("test"):
+            meta["leetcode_test_harness"] = row.get("test")
+        if row.get("task_id"):
+            meta["task_id"] = row.get("task_id")
         problems.append(CodeProblem(
             problem_id=str(row.get("problem_id", row.get("id", ""))),
             prompt=row.get("question", ""),
@@ -43,11 +70,50 @@ def load_apps(
             difficulty=row.get("difficulty", ""),
             source="apps",
             fn_name=fn_name,
+            meta=meta,
         ))
     return problems
 
 
-def _load_rows(split: str, difficulty: str | None) -> list[dict]:
+def _should_skip_for_runtime_compat(row: dict, io_raw: dict | str) -> bool:
+    """Skip rows that require unsupported online-judge runtime helpers.
+
+    We currently support plain functions, ListNode and TreeNode conversions.
+    """
+    starter_code = row.get("starter_code", "") or ""
+    has_harness = bool(row.get("test")) and bool(row.get("entry_point"))
+
+    # Skip `Node`-typed tasks (distinct from ListNode/TreeNode) for now.
+    # These include random-pointer/tree graph node variants not yet emulated.
+    if re.search(r"\bNode\b", starter_code) and (
+        "ListNode" not in starter_code and "TreeNode" not in starter_code
+    ):
+        return True
+
+    # Skip API-backed interactive/judge helper tasks.
+    for pat in _UNSUPPORTED_LEETCODE_API_PATTERNS:
+        if re.search(pat, starter_code):
+            return True
+
+    # Converted datasets sometimes encode unimplemented cases as Error: ...
+    # Keep these if harness is present (harness path can still execute correctly).
+    if isinstance(io_raw, dict):
+        outputs = io_raw.get("outputs", [])
+        if any(isinstance(o, str) and o.startswith("Error:") for o in outputs) and not has_harness:
+            return True
+
+    return False
+
+
+def _load_rows(
+    split: str, difficulty: str | None, data_file: str | None = None
+) -> list[dict]:
+    if data_file:
+        rows = _load_rows_from_file(data_file)
+        if difficulty:
+            rows = [r for r in rows if r.get("difficulty") == difficulty]
+        return rows
+
     # "all" → merge every available split
     if split == "all":
         rows: list[dict] = []
@@ -83,6 +149,13 @@ def _load_rows_single(split: str) -> list[dict]:
         import shutil
         shutil.copy(path, local)
     return rows
+
+
+def _load_rows_from_file(path: str) -> list[dict]:
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"Data file not found: {path}")
+    return [json.loads(l) for l in p.read_text().splitlines() if l.strip()]
 
 
 def _safe_json(raw) -> any:

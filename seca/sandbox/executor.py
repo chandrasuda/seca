@@ -88,6 +88,26 @@ class FeedbackBundle:
         return bool(self.results) and all(r.passed for r in self.results)
 
 
+def _typed_arg_positions(problem: CodeProblem, type_token: str) -> list[int]:
+    """Infer which function args mention a given type token in starter_code."""
+    if not problem.fn_name or not problem.starter_code:
+        return []
+    sig_line = None
+    for line in problem.starter_code.splitlines():
+        if f"def {problem.fn_name}" in line:
+            sig_line = line.strip()
+            break
+    if not sig_line or "(" not in sig_line or ")" not in sig_line:
+        return []
+    raw_params = [p.strip() for p in sig_line.split("(", 1)[1].rsplit(")", 1)[0].split(",")]
+    params = [p for p in raw_params if p and p not in {"self", "cls"}]
+    positions: list[int] = []
+    for idx, p in enumerate(params):
+        if type_token in p:
+            positions.append(idx)
+    return positions
+
+
 def execute_code(
     code: str,
     problem: CodeProblem,
@@ -122,19 +142,123 @@ def execute_code(
             first_failure_stderr="" if r.passed else r.stderr,
             first_failure_stdout="" if r.passed else r.stdout,
         )
+    harness = problem.meta.get("leetcode_test_harness", "")
+    entry_point = problem.meta.get("leetcode_entry_point", "")
+    if harness and entry_point:
+        return _execute_with_harness(
+            code=code,
+            harness=harness,
+            entry_point=entry_point,
+            timeout=timeout,
+        )
 
     results: list[ExecResult] = []
+    listnode_positions = _typed_arg_positions(problem, "ListNode")
+    treenode_positions = _typed_arg_positions(problem, "TreeNode")
     for tc in problem.test_cases:
         if problem.fn_name:
-            wrapper = (
-                "\nimport json as __j\n"
-                f"__args = __j.loads({tc.input!r})\n"
-                "try:\n"
-                f"    __result = {problem.fn_name}(*__args)\n"
-                "except NameError:\n"
-                f"    __result = Solution().{problem.fn_name}(*__args)\n"
-                "print(__j.dumps(__result, sort_keys=True))\n"
+            wrapper_lines = [
+                "\nimport json as __j",
+                f"__args = __j.loads({tc.input!r})",
+                "if not isinstance(__args, list):",
+                "    __args = [__args]",
+            ]
+            if listnode_positions:
+                wrapper_lines.extend(
+                    [
+                        "def __to_listnode(x):",
+                        "    if x is None:",
+                        "        return None",
+                        "    if not isinstance(x, list):",
+                        "        return x",
+                        "    __dummy = ListNode(0)",
+                        "    __cur = __dummy",
+                        "    for __v in x:",
+                        "        __cur.next = ListNode(__v)",
+                        "        __cur = __cur.next",
+                        "    return __dummy.next",
+                        "def __from_listnode(node):",
+                        "    __out = []",
+                        "    __guard = 0",
+                        "    while node is not None and __guard < 10000:",
+                        "        __out.append(node.val)",
+                        "        node = node.next",
+                        "        __guard += 1",
+                        "    return __out",
+                        f"__ln_positions = {listnode_positions!r}",
+                        "for __i in __ln_positions:",
+                        "    if 0 <= __i < len(__args):",
+                        "        __args[__i] = __to_listnode(__args[__i])",
+                    ]
+                )
+            if treenode_positions:
+                wrapper_lines.extend(
+                    [
+                        "def __to_treenode(vals):",
+                        "    if vals is None:",
+                        "        return None",
+                        "    if not isinstance(vals, list):",
+                        "        return vals",
+                        "    if not vals:",
+                        "        return None",
+                        "    __nodes = [TreeNode(v) if v is not None else None for v in vals]",
+                        "    __kids = __nodes[::-1]",
+                        "    __root = __kids.pop()",
+                        "    for __node in __nodes:",
+                        "        if __node is not None:",
+                        "            if __kids:",
+                        "                __node.left = __kids.pop()",
+                        "            if __kids:",
+                        "                __node.right = __kids.pop()",
+                        "    return __root",
+                        "def __from_treenode(root):",
+                        "    if root is None:",
+                        "        return []",
+                        "    __out = []",
+                        "    __q = [root]",
+                        "    __idx = 0",
+                        "    while __idx < len(__q):",
+                        "        __node = __q[__idx]",
+                        "        __idx += 1",
+                        "        if __node is None:",
+                        "            __out.append(None)",
+                        "            continue",
+                        "        __out.append(__node.val)",
+                        "        __q.append(__node.left)",
+                        "        __q.append(__node.right)",
+                        "    while __out and __out[-1] is None:",
+                        "        __out.pop()",
+                        "    return __out",
+                        f"__tn_positions = {treenode_positions!r}",
+                        "for __i in __tn_positions:",
+                        "    if 0 <= __i < len(__args):",
+                        "        __args[__i] = __to_treenode(__args[__i])",
+                    ]
+                )
+            wrapper_lines.extend(
+                [
+                    "try:",
+                    f"    __result = {problem.fn_name}(*__args)",
+                    "except NameError:",
+                    f"    __result = Solution().{problem.fn_name}(*__args)",
+                ]
             )
+            if listnode_positions:
+                wrapper_lines.extend(
+                    [
+                        "if hasattr(__result, 'val') and hasattr(__result, 'next'):",
+                        "    __result = __from_listnode(__result)",
+                    ]
+                )
+            if treenode_positions:
+                wrapper_lines.extend(
+                    [
+                        "if hasattr(__result, 'val') and hasattr(__result, 'left') and hasattr(__result, 'right'):",
+                        "    __result = __from_treenode(__result)",
+                    ]
+                )
+            wrapper_lines.append("print(__j.dumps(__result, sort_keys=True))")
+            wrapper = "\n".join(wrapper_lines) + "\n"
             snippet = code + wrapper
         else:
             snippet = code
@@ -180,6 +304,47 @@ def execute_code(
     )
 
 
+def _execute_with_harness(
+    code: str,
+    harness: str,
+    entry_point: str,
+    timeout: float,
+) -> FeedbackBundle:
+    """Execute candidate against original LeetCode-style test harness."""
+    marker = "__SECA_HARNESS_PASS__"
+    wrapper = (
+        "\nimport traceback as __tb\n"
+        "try:\n"
+        f"    __candidate = {entry_point}\n"
+        "    check(__candidate)\n"
+        f"    print('{marker}')\n"
+        "except Exception:\n"
+        "    __tb.print_exc()\n"
+        "    raise\n"
+    )
+    snippet = code + "\n" + harness + "\n" + wrapper
+    r = _run_snippet(snippet, stdin="", timeout=timeout)
+    passed = (not r.timed_out) and (not r.stderr) and (marker in r.stdout)
+    r.passed = passed
+    summary = (
+        "Passed harness checks."
+        if passed
+        else "Failed harness checks."
+    )
+    if r.timed_out:
+        summary += f" Timed out ({timeout}s)."
+    elif r.stderr:
+        summary += f" Stderr: {r.stderr[:300]}"
+    return FeedbackBundle(
+        results=[r],
+        summary=summary,
+        pass_rate=1.0 if passed else 0.0,
+        extracted_code=code,
+        first_failure_stderr="" if passed else r.stderr,
+        first_failure_stdout="" if passed else r.stdout,
+    )
+
+
 # ── internal ──
 
 # Clean env for subprocesses: strip VIRTUAL_ENV / CONDA vars that might
@@ -190,6 +355,74 @@ _CLEAN_ENV = {
 }
 _CLEAN_ENV["PYTHONDONTWRITEBYTECODE"] = "1"
 _CLEAN_ENV["PYTHONHASHSEED"] = "0"
+
+# LeetCode-style completions often rely on typing aliases (List, Optional, etc.)
+# and platform-provided helper classes (e.g., ListNode) without importing them.
+# Inject compatibility definitions so such code executes in our sandbox.
+_EXEC_PRELUDE = (
+    "from typing import *\n"
+    "inf = float('inf')\n"
+    "class ListNode:\n"
+    "    def __init__(self, val=0, next=None):\n"
+    "        self.val = val\n"
+    "        self.next = next\n"
+    "class TreeNode:\n"
+    "    def __init__(self, val=0, left=None, right=None):\n"
+    "        self.val = val\n"
+    "        self.left = left\n"
+    "        self.right = right\n"
+    "def list_node(vals):\n"
+    "    if vals is None:\n"
+    "        return None\n"
+    "    if not isinstance(vals, list):\n"
+    "        return vals\n"
+    "    dummy = ListNode(0)\n"
+    "    cur = dummy\n"
+    "    for v in vals:\n"
+    "        cur.next = ListNode(v)\n"
+    "        cur = cur.next\n"
+    "    return dummy.next\n"
+    "def is_same_list(a, b):\n"
+    "    guard = 0\n"
+    "    while a is not None and b is not None and guard < 100000:\n"
+    "        if a.val != b.val:\n"
+    "            return False\n"
+    "        a = a.next\n"
+    "        b = b.next\n"
+    "        guard += 1\n"
+    "    return a is None and b is None\n"
+    "def tree_node(vals):\n"
+    "    if vals is None:\n"
+    "        return None\n"
+    "    if not isinstance(vals, list):\n"
+    "        return vals\n"
+    "    if not vals:\n"
+    "        return None\n"
+    "    nodes = [TreeNode(v) if v is not None else None for v in vals]\n"
+    "    kids = nodes[::-1]\n"
+    "    root = kids.pop()\n"
+    "    for node in nodes:\n"
+    "        if node is not None:\n"
+    "            if kids:\n"
+    "                node.left = kids.pop()\n"
+    "            if kids:\n"
+    "                node.right = kids.pop()\n"
+    "    return root\n"
+    "def is_same_tree(a, b):\n"
+    "    qa, qb = [a], [b]\n"
+    "    while qa and qb:\n"
+    "        na = qa.pop(0)\n"
+    "        nb = qb.pop(0)\n"
+    "        if na is None and nb is None:\n"
+    "            continue\n"
+    "        if na is None or nb is None:\n"
+    "            return False\n"
+    "        if na.val != nb.val:\n"
+    "            return False\n"
+    "        qa.extend([na.left, na.right])\n"
+    "        qb.extend([nb.left, nb.right])\n"
+    "    return len(qa) == len(qb)\n"
+)
 
 
 def _run_snippet(code: str, stdin: str = "", timeout: float = 30.0) -> ExecResult:
@@ -205,6 +438,7 @@ def _run_snippet(code: str, stdin: str = "", timeout: float = 30.0) -> ExecResul
 
     try:
         with open(script, "w") as f:
+            f.write(_EXEC_PRELUDE)
             f.write(code)
 
         proc = subprocess.run(
