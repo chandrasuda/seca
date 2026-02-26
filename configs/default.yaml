@@ -1,44 +1,59 @@
-# Omni-Teacher: SDFT + SDPO for Code Generation
+# Omni-Teacher: SDFT + SDPO for Code Generation (vLLM + HuggingFace)
+# Target: Qwen3-1.7B
 
 model:
-  name: "deepseek-ai/deepseek-coder-1.3b-instruct"
+  name: "Qwen/Qwen3-1.7B"
   dtype: "bfloat16"
-  max_len: 2048
+  max_len: 4096
+
+# vLLM inference engine settings
+vllm:
+  gpu_memory_utilization: 0.4   # leave room for training engine
+  max_model_len: 4096
+  enforce_eager: true           # avoid CUDA graph memory fragmentation
+
+# Inference/sampling params for rollout generation
+inference:
+  temperature: 1.0
+  top_p: 0.95
+  max_new_tokens: 512
 
 training:
-  mode: "omni"                # sft | sdft | sdpo | omni | grpo
-  lr: 1e-6                   # SDPO paper Table 12
-  weight_decay: 0.01         # SDPO paper Table 12
+  mode: "omni"                  # sft | sdft | sdpo | omni | grpo
+  lr: 5e-7                      # lower for 1.7B (paper uses 1e-6 for 8B)
+  weight_decay: 0.01
   num_epochs: 3
-  num_samples: 4             # K on-policy rollouts per problem
-  max_grad_norm: 1.0         # SDPO paper Table 12
-  ema_alpha: 0.01            # EMA teacher: ϕ ← 0.99·ϕ + 0.01·θ
+  num_samples: 16               # G rollouts per problem (SDPO paper uses 8)
+  mini_batch_size: 4            # gradient accumulation chunk size
+  max_grad_norm: 1.0
+  ema_alpha: 0.005              # EMA: ϕ ← 0.995·ϕ + 0.005·θ
   checkpoint_dir: "checkpoints/"
   eval_every_epoch: 1
 
-# SDFT: topk=100 per description
+# SDFT: topk=100 per SDFT paper
 sdft: { temperature_student: 1.0, temperature_teacher: 0.7, kl_weight: 0.5, topk: 100 }
 
 # SDPO: topk=20 per SDPO paper Table 12
 sdpo: { temperature_student: 1.0, temperature_teacher: 0.7, kl_weight: 0.5, topk: 20 }
 
 omni:
-  alpha_sdft: 0.4            # L = α·KL_sdft + β·KL_sdpo + γ·NLL_gold
+  alpha_sdft: 0.4               # L = α·KL_sdft + β·KL_sdpo + γ·NLL_gold
   beta_sdpo: 0.4
   gamma_nll: 0.2
   sdft: { temperature_student: 1.0, temperature_teacher: 0.7, kl_weight: 1.0, topk: 100 }
   sdpo: { temperature_student: 1.0, temperature_teacher: 0.7, kl_weight: 1.0, topk: 20 }
 
 data:
-  dataset: "apps"             # apps | livecodebench | kernelbench
+  dataset: "apps"               # apps | livecodebench | kernelbench
   split: "test"
-  difficulty: "introductory"  # apps only
+  difficulty: "introductory"    # apps only
   max_problems: 100
 
 eval:
   n_samples: 10
   k_values: [1, 5, 10]
-  temperature: 0.8
+  temperature: 0.6              # lower for evaluation per SDPO paper
+  top_p: 0.95
   log_dir: "logs/"
 
 seed: 42

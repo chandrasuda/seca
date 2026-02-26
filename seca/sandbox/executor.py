@@ -1,9 +1,21 @@
 """Sandboxed code execution — runs student code against test cases."""
 from __future__ import annotations
-import subprocess, tempfile
+import re
+import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from seca.data.problem import CodeProblem
+
+
+def extract_code(text: str) -> str:
+    """Extract Python code from completion (handles ```python ... ``` blocks)."""
+    text = text.strip()
+    # Try ```python ... ``` or ``` ... ```
+    match = re.search(r"```(?:python)?\s*\n?(.*?)```", text, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    return text
 
 
 @dataclass
@@ -31,8 +43,12 @@ def execute_code(
     code: str,
     problem: CodeProblem,
     timeout: float = 10.0,
+    extract: bool = True,
 ) -> FeedbackBundle:
-    """Run *code* against all test cases in *problem*; return feedback."""
+    """Run *code* against all test cases in *problem*; return feedback.
+    If extract=True, extracts Python from ``` blocks."""
+    if extract:
+        code = extract_code(code)
     if not problem.test_cases:
         # no tests → just try to compile
         r = _run_snippet(code, stdin="", timeout=timeout)

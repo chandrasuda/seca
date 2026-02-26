@@ -1,9 +1,19 @@
-"""Evaluation: Pass@k (unbiased) and execution success rate."""
+"""Evaluation: Pass@k (unbiased) and execution success rate.
+
+Uses vLLM-backed model.generate() when available (via sampling_params).
+"""
 from __future__ import annotations
+
 import math
+from typing import TYPE_CHECKING
+
 import torch
+
 from seca.data.problem import CodeProblem
 from seca.sandbox.executor import execute_code
+
+if TYPE_CHECKING:
+    from vllm import SamplingParams
 
 
 def pass_at_k(n: int, c: int, k: int) -> float:
@@ -14,18 +24,32 @@ def pass_at_k(n: int, c: int, k: int) -> float:
 
 
 @torch.no_grad()
-def evaluate_problems(model, problems: list[CodeProblem], n_samples: int = 10,
-                      k_values: list[int] | None = None, temperature: float = 0.8,
-                      timeout: float = 10.0) -> dict:
+def evaluate_problems(
+    model,
+    problems: list[CodeProblem],
+    n_samples: int = 10,
+    k_values: list[int] | None = None,
+    temperature: float = 0.8,
+    top_p: float = 0.95,
+    sampling_params: "SamplingParams | None" = None,
+    timeout: float = 10.0,
+) -> dict:
+    """Evaluate model on problems. Uses vLLM when model has generate(prompts, sampling_params)."""
     k_values = k_values or [1, 5, 10]
     all_pass_at: dict[int, list[float]] = {k: [] for k in k_values}
     total_pass_rate = 0.0
 
     for problem in problems:
         prompts = [problem.format_prompt()] * n_samples
-        completions = model.generate(
-            prompts, temperature=temperature, do_sample=True,
-        )
+        if sampling_params is not None:
+            completions = model.generate(prompts, sampling_params=sampling_params)
+        else:
+            completions = model.generate(
+                prompts,
+                temperature=temperature,
+                top_p=top_p,
+                do_sample=True,
+            )
 
         # execute each completion
         n_correct = 0

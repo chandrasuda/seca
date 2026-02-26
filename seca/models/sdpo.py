@@ -47,23 +47,24 @@ def _build_teacher_context(
     passed: bool,
     passing_completion: str | None,
 ) -> str:
-    """Build teacher context per SDPO Table 2: three cases."""
+    """Build teacher context per SDPO paper Table 2: three cases."""
     prompt = problem.format_prompt()
-    base = f"### Problem\n{prompt}\n\n"
 
+    # SDPO Table 2: User block with optional solution + feedback
+    parts = [f"User:\n{prompt}\n\n"]
     if passed:
-        # Case 3: y_i itself passed — teacher sees it as correct solution
-        base += f"### Correct Solution (from your successful attempt)\n{completion}\n\n"
+        parts.append(f"Correct solution (from your successful attempt):\n{completion}\n\n")
     elif passing_completion is not None:
-        # Case 1: y_i failed, but another attempt y_j passed
-        base += f"### Correct Solution (from your successful attempt)\n{passing_completion}\n\n"
-        base += f"### Feedback from your failed attempt\n{feedback_summary}\n\n"
+        parts.append(f"Correct solution (from your successful attempt):\n{passing_completion}\n\n")
+        parts.append(
+            f"The following is feedback from your unsuccessful earlier attempt: {feedback_summary}\n\n"
+        )
     else:
-        # Case 2: all failed — only feedback
-        base += f"### Feedback from your failed attempt\n{feedback_summary}\n\n"
-
-    base += "Correctly solve the original question.\n\n### Solution\n"
-    return base
+        parts.append(
+            f"The following is feedback from your unsuccessful earlier attempt: {feedback_summary}\n\n"
+        )
+    parts.append("Correctly solve the original question.\n\nAssistant:\n")
+    return "".join(parts)
 
 
 class SDPOOperator:

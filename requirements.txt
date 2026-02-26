@@ -4,3 +4,6 @@ datasets>=2.18
 numpy>=1.26
 pyyaml>=6.0
 matplotlib>=3.8
+vllm>=0.8
+trl>=0.16
+accelerate>=1.2
