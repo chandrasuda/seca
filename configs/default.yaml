@@ -48,6 +48,7 @@ data:
   split: "test"
   difficulty: "introductory"    # apps only
   max_problems: 100
+  filter_bad_gold: true         # drop problems whose gold solution fails its own tests
 
 eval:
   n_samples: 10

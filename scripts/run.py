@@ -127,11 +127,13 @@ def main() -> None:
     )
     vllm_cfg = cfg.get("vllm", {})
     inf_cfg = cfg.get("inference", {})
+    lr = cfg["training"]["lr"]
+    lr_val = float(lr) if isinstance(lr, str) else lr
     log.info(
         "Training: mode=%s model=%s lr=%.0e epochs=%d K=%d mini_batch=%d",
         cfg["training"]["mode"],
         cfg["model"]["name"],
-        cfg["training"]["lr"],
+        lr_val,
         cfg["training"]["num_epochs"],
         cfg["training"]["num_samples"],
         cfg["training"].get("mini_batch_size", 4),
