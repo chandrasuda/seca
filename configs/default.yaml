@@ -48,8 +48,6 @@ data:
   split: "all"                  # "all" merges train+test (10K total)
   # difficulty: "introductory"  # omit to include all difficulties
   # max_problems: 100           # omit to load everything
-  filter_bad_gold: true         # drop problems whose gold solution fails its own tests
-
 eval:
   n_samples: 10
   k_values: [1, 5, 10]

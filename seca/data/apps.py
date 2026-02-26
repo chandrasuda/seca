@@ -9,7 +9,7 @@ from seca.data.problem import CodeProblem, TestCase
 # Python 3.11+ limits int→str conversion by default; lift it.
 sys.set_int_max_str_digits(0)
 
-LOCAL_DIR = Path(__file__).resolve().parents[2] / "data"
+LOCAL_DIR = Path(__file__).resolve().parents[2] / "data_filtered"
 
 # Every split the HF repo actually contains.
 _ALL_SPLITS = ("train", "test")

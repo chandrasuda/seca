@@ -92,7 +92,7 @@ def check1_executor(problem, passing_code: str, failing_code: str) -> bool:
     ok = True
     if not fb_pass.all_passed:
         print(f"  FAIL — gold solution did not pass its own tests.")
-        print(f"         Check filter_bad_gold in data config.")
+        print(f"         Ensure data_filtered/ contains pre-filtered data (run filter_data.py).")
         ok = False
     else:
         print(f"  PASS — gold solution passes all tests")
@@ -466,11 +466,9 @@ def main() -> None:
     print(f"Config:  {args.config}")
     print(f"Model:   {cfg['model']['name']}")
 
-    # Load a small slice of problems; filter_bad_gold ensures gold solutions
-    # pass their own tests (required for check1 and check4 to be meaningful).
+    # Load a small slice of problems from data_filtered/ (pre-filtered).
     data_cfg = dict(cfg.get("data", {}))
     data_cfg["max_problems"] = 5
-    data_cfg["filter_bad_gold"] = True
     problems = load_problems(data_cfg)
     if not problems:
         print("ERROR: no problems loaded — check data config.")
