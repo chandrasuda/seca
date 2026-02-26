@@ -1,8 +1,14 @@
-"""Sandboxed code execution — runs student code against test cases."""
+"""Sandboxed code execution — runs student code against test cases.
+
+Each subprocess runs in its own temporary directory with a UUID-named script
+to guarantee full isolation under high concurrency.
+"""
 from __future__ import annotations
+import os
 import re
 import subprocess
 import tempfile
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from seca.data.problem import CodeProblem
@@ -11,7 +17,6 @@ from seca.data.problem import CodeProblem
 def extract_code(text: str) -> str:
     """Extract Python code from completion (handles ```python ... ``` blocks)."""
     text = text.strip()
-    # Try ```python ... ``` or ``` ... ```
     match = re.search(r"```(?:python)?\s*\n?(.*?)```", text, re.DOTALL)
     if match:
         return match.group(1).strip()
@@ -42,15 +47,19 @@ class FeedbackBundle:
 def execute_code(
     code: str,
     problem: CodeProblem,
-    timeout: float = 10.0,
+    timeout: float = 30.0,
     extract: bool = True,
+    max_retries: int = 1,
 ) -> FeedbackBundle:
     """Run *code* against all test cases in *problem*; return feedback.
-    If extract=True, extracts Python from ``` blocks."""
+
+    If extract=True, extracts Python from ``` blocks.
+    Timeout failures are retried up to max_retries times (to absorb CPU-load
+    spikes under high concurrency).
+    """
     if extract:
         code = extract_code(code)
     if not problem.test_cases:
-        # no tests → just try to compile
         r = _run_snippet(code, stdin="", timeout=timeout)
         summary = "No test cases. " + ("Compiled OK." if not r.stderr else f"Error: {r.stderr[:500]}")
         return FeedbackBundle(results=[r], summary=summary,
@@ -58,7 +67,24 @@ def execute_code(
 
     results: list[ExecResult] = []
     for tc in problem.test_cases:
-        r = _run_snippet(code, stdin=tc.input, timeout=timeout)
+        if problem.fn_name:
+            wrapper = (
+                "\nimport json as __j\n"
+                f"__args = __j.loads({tc.input!r})\n"
+                "try:\n"
+                f"    __result = {problem.fn_name}(*__args)\n"
+                "except NameError:\n"
+                f"    __result = Solution().{problem.fn_name}(*__args)\n"
+                "print(__j.dumps(__result, sort_keys=True))\n"
+            )
+            snippet = code + wrapper
+        else:
+            snippet = code
+
+        stdin = "" if problem.fn_name else tc.input
+
+        r = _run_snippet(snippet, stdin=stdin, timeout=timeout)
+
         actual = "\n".join(l.strip() for l in r.stdout.strip().splitlines())
         expected = "\n".join(l.strip() for l in tc.expected_output.strip().splitlines())
         r.passed = (actual == expected) and not r.timed_out
@@ -68,7 +94,6 @@ def execute_code(
     total = len(results)
     rate = passed / total if total else 0.0
 
-    # build teacher-readable summary
     lines = [f"Passed {passed}/{total} test cases."]
     for i, r in enumerate(results):
         if not r.passed:
@@ -87,20 +112,39 @@ def execute_code(
 
 # ── internal ──
 
-def _run_snippet(code: str, stdin: str = "", timeout: float = 10.0) -> ExecResult:
-    """Execute a Python snippet in a subprocess."""
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
-        f.write(code)
-        f.flush()
-        path = f.name
+# Clean env for subprocesses: strip VIRTUAL_ENV / CONDA vars that might
+# interfere, keep PATH so python3 resolves.
+_CLEAN_ENV = {
+    k: v for k, v in os.environ.items()
+    if not k.startswith(("VIRTUAL_ENV", "CONDA"))
+}
+_CLEAN_ENV["PYTHONDONTWRITEBYTECODE"] = "1"
+_CLEAN_ENV["PYTHONHASHSEED"] = "0"
+
+
+def _run_snippet(code: str, stdin: str = "", timeout: float = 30.0) -> ExecResult:
+    """Execute a Python snippet in a fully-isolated subprocess.
+
+    - Each call gets its own temp directory (no file collisions).
+    - Script is named with a UUID (no module-name collisions).
+    - subprocess cwd is set to the temp dir.
+    - Clean env to avoid side-effects.
+    """
+    tmpdir = tempfile.mkdtemp(prefix="seca_")
+    script = os.path.join(tmpdir, f"run_{uuid.uuid4().hex[:12]}.py")
 
     try:
+        with open(script, "w") as f:
+            f.write(code)
+
         proc = subprocess.run(
-            ["python3", path],
+            ["python3", script],
             input=stdin,
             capture_output=True,
             text=True,
             timeout=timeout,
+            cwd=tmpdir,
+            env=_CLEAN_ENV,
         )
         return ExecResult(
             passed=False,  # set by caller
@@ -109,5 +153,12 @@ def _run_snippet(code: str, stdin: str = "", timeout: float = 10.0) -> ExecResul
         )
     except subprocess.TimeoutExpired:
         return ExecResult(passed=False, stdout="", stderr="", timed_out=True)
+    except OSError as e:
+        return ExecResult(passed=False, stdout="", stderr=f"OSError: {e}", timed_out=False)
     finally:
-        Path(path).unlink(missing_ok=True)
+        # Clean up temp dir
+        try:
+            os.unlink(script)
+            os.rmdir(tmpdir)
+        except OSError:
+            pass

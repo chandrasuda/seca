@@ -1,0 +1,15 @@
+split=test total=65 pass=61 fail=0 timeout=4
+runtime_error=0 wrong_output=0 no_gold=0 no_tests=0 unknown=0 bad_json=0
+
+[timeout]
+  pid=2538 idx=24 test=1
+  pid=2092 idx=15 test=0
+  pid=2119 idx=17 test=0
+  pid=1628 idx=0 test=0
+
+[runtime_error]
+
+[wrong_output]
+
+[unknown]
+
