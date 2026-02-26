@@ -17,21 +17,44 @@ from seca.data.problem import CodeProblem
 def extract_code(text: str) -> str:
     """Extract Python code from completion.
 
-    Primary format (preferred): <start_code> ... <end_code>
+    Primary format (preferred): <start_code> ... <end_code> or </start_code>
+    Models sometimes output XML-style </start_code> instead of <end_code>.
     Fallback:
+      - <start_code> without end tag → take everything after last start_tag
       - ```python ... ```
       - ```py ... ```
       - ``` ... ``` (no lang tag)
       - Raw code with no block (returns as-is)
     Takes the last/largest block if multiple exist.
+    Strips tags from output so they never end up in executed code (SyntaxError).
     """
     text = text.strip()
-    # Primary: <start_code> ... <end_code>
-    start_tag, end_tag = "<start_code>", "<end_code>"
-    if start_tag in text and end_tag in text:
-        parts = text.split(start_tag, 1)[-1].split(end_tag, 1)
-        if len(parts) >= 1 and parts[0].strip():
-            return parts[0].strip()
+    start_tag = "<start_code>"
+    # Accept both <end_code> and XML-style </start_code> as end delimiters
+    end_tags = ("<end_code>", "</start_code>")
+
+    if start_tag in text:
+        after_start = text.split(start_tag)[-1]
+        # Find content before first occurrence of any end tag
+        earliest = len(after_start)
+        for et in end_tags:
+            idx = after_start.find(et)
+            if idx >= 0 and idx < earliest:
+                earliest = idx
+        before_end = after_start[:earliest] if earliest < len(after_start) else after_start
+        extracted = before_end.strip()
+        if extracted:
+            # Strip any tag lines that snuck through (leading/trailing)
+            for tag in (start_tag,) + end_tags:
+                extracted = extracted.replace(tag, "")
+            extracted = extracted.strip()
+            if extracted:
+                return extracted
+        # Partial: has start_tag but empty/no valid content before end — try rest
+        if any(et in after_start for et in end_tags):
+            return ""  # content between tags was empty
+        return after_start.strip() if after_start.strip() else ""
+
     # Fallback: ```python, ```py, or bare ```
     pattern = r"```(?:python|py)?\s*\n?(.*?)```"
     matches = list(re.finditer(pattern, text, re.DOTALL | re.IGNORECASE))
