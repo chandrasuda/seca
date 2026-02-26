@@ -132,7 +132,7 @@ def run_sdpo_training(
     epochs: int = 1,
     lr: float = 1e-5,
     num_generations: int = 4,
-    max_prompt_length: int = 1024,
+    max_prompt_length: int | None = None,
     max_completion_length: int = 2048,
     max_teacher_prompt_length: int = 4096,
     teacher_regularization: str = "trust_region",
@@ -184,7 +184,6 @@ def run_sdpo_training(
         "--epochs", str(epochs),
         "--lr", str(lr),
         "--num-generations", str(num_generations),
-        "--max-prompt-length", str(max_prompt_length),
         "--max-completion-length", str(max_completion_length),
         "--max-teacher-prompt-length", str(max_teacher_prompt_length),
         "--teacher-regularization", teacher_regularization,
@@ -200,6 +199,8 @@ def run_sdpo_training(
         cmd.extend(["--difficulty", difficulty])
     if max_problems is not None:
         cmd.extend(["--max-problems", str(max_problems)])
+    if max_prompt_length is not None:
+        cmd.extend(["--max-prompt-length", str(max_prompt_length)])
     if include_env_feedback:
         cmd.append("--include-env-feedback")
 
@@ -314,7 +315,7 @@ def main(
     epochs: int = 1,
     lr: float = 1e-5,
     num_generations: int = 4,
-    max_prompt_length: int = 1024,
+    max_prompt_length: int | None = None,
     max_completion_length: int = 2048,
     max_teacher_prompt_length: int = 4096,
     teacher_regularization: str = "trust_region",

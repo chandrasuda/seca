@@ -133,7 +133,7 @@ def run_sdft_training(
     epochs: int = 1,
     lr: float = 1e-5,
     num_generations: int = 8,
-    max_prompt_length: int = 1024,
+    max_prompt_length: int | None = None,
     max_completion_length: int = 2048,
     ema_alpha: float = 0.01,
     vllm_gpu_memory: float = 0.35,
@@ -173,7 +173,6 @@ def run_sdft_training(
         "--epochs", str(epochs),
         "--lr", str(lr),
         "--num-generations", str(num_generations),
-        "--max-prompt-length", str(max_prompt_length),
         "--max-completion-length", str(max_completion_length),
         "--ema-alpha", str(ema_alpha),
         "--vllm-gpu-memory", str(vllm_gpu_memory),
@@ -184,6 +183,8 @@ def run_sdft_training(
         cmd.extend(["--difficulty", difficulty])
     if max_problems is not None:
         cmd.extend(["--max-problems", str(max_problems)])
+    if max_prompt_length is not None:
+        cmd.extend(["--max-prompt-length", str(max_prompt_length)])
 
     env = _modal_env()
     # Pass W&B credentials if configured as Modal secrets
@@ -297,7 +298,7 @@ def main(
     epochs: int = 1,
     lr: float = 1e-5,
     num_generations: int = 8,
-    max_prompt_length: int = 1024,
+    max_prompt_length: int | None = None,
     max_completion_length: int = 2048,
     ema_alpha: float = 0.01,
     vllm_gpu_memory: float = 0.35,

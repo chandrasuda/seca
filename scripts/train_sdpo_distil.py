@@ -310,8 +310,8 @@ def parse_args() -> argparse.Namespace:
                    help="Learning rate (paper: 1e-5 for LCBv6 rich-feedback)")
     p.add_argument("--num-generations", type=int, default=4,
                    help="G rollouts per problem (paper: 4 for LCBv6)")
-    p.add_argument("--max-prompt-length", type=int, default=1024,
-                   help="Max student prompt tokens (truncated left)")
+    p.add_argument("--max-prompt-length", type=int, default=None,
+                   help="Max student prompt tokens (default: None = no truncation)")
     p.add_argument("--max-completion-length", type=int, default=2048,
                    help="Max completion tokens per rollout")
     p.add_argument("--max-teacher-prompt-length", type=int, default=4096,
@@ -482,11 +482,13 @@ def main() -> None:
                 student_messages, tokenize=False, add_generation_prompt=True,
                 enable_thinking=False,
             )
+            student_tok_kwargs = {"return_tensors": "pt"}
+            if args.max_prompt_length is not None:
+                student_tok_kwargs.update(
+                    {"truncation": True, "max_length": args.max_prompt_length}
+                )
             student_prompt_ids = tokenizer(
-                student_prompt_formatted,
-                return_tensors="pt",
-                truncation=True,
-                max_length=args.max_prompt_length,
+                student_prompt_formatted, **student_tok_kwargs
             ).input_ids.to(device)
             student_prompt_len = student_prompt_ids.shape[1]
 

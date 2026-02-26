@@ -137,8 +137,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--max-prompt-length",
         type=int,
-        default=1024,
-        help="Max prompt tokens, truncated left (paper: 1024 for skill learning)",
+        default=None,
+        help="Max prompt tokens (default: None = no truncation)",
     )
     p.add_argument(
         "--max-completion-length",
