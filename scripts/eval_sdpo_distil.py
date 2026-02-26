@@ -39,6 +39,7 @@ from transformers import AutoTokenizer
 from seca.data.apps import load_apps
 from seca.sandbox.executor import execute_code
 from seca.eval.metrics import pass_at_k
+from seca.utils.tokenizer import make_no_thinking_tokenizer
 
 log = logging.getLogger(__name__)
 
@@ -118,6 +119,7 @@ def main() -> None:
         seed=args.seed,
     )
     tokenizer = AutoTokenizer.from_pretrained(checkpoint_path)
+    make_no_thinking_tokenizer(tokenizer)  # disable <think> for Qwen3
 
     sampling_params = SamplingParams(
         temperature=args.temperature,
@@ -146,7 +148,8 @@ def main() -> None:
         messages = [{"role": "user", "content": prompt_text}]
         if hasattr(tokenizer, "apply_chat_template"):
             formatted = tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
+                messages, tokenize=False, add_generation_prompt=True,
+                enable_thinking=False,
             )
         else:
             formatted = prompt_text

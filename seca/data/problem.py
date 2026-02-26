@@ -26,5 +26,9 @@ class CodeProblem:
         parts = [self.prompt]
         if self.starter_code:
             parts.append(f"\n```python\n{self.starter_code}\n```")
-        parts.append("\nWrite a complete Python solution.")
+        parts.append(
+            "\nWrite a complete Python solution. Your response must contain ONLY executable code "
+            "enclosed between <start_code> and <end_code> tokens. No explanation, no markdown. "
+            "Example format:\n<start_code>\n# your code here\n<end_code>"
+        )
         return "\n".join(parts)

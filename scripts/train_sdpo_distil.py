@@ -54,6 +54,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from seca.data.apps import load_apps
 from seca.sandbox.executor import execute_code
+from seca.utils.tokenizer import make_no_thinking_tokenizer
 
 log = logging.getLogger(__name__)
 
@@ -63,11 +64,11 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _REPROMPT_TEMPLATE = (
     "{prompt}{solution}{feedback}\n\n"
-    "Correctly solve the original question.\n"
+    "Correctly solve the original question. Your response must contain ONLY executable code "
+    "enclosed between <start_code> and <end_code> tokens.\n"
 )
 _SOLUTION_TEMPLATE = (
-    "\nCorrect solution:\n\n"
-    "{successful_previous_attempt}\n\n"
+    "\nCorrect solution:\n\n{successful_previous_attempt}\n\n"
 )
 _FEEDBACK_TEMPLATE = (
     "\nThe following is feedback from your unsuccessful earlier attempt:\n\n"
@@ -401,6 +402,7 @@ def main() -> None:
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    make_no_thinking_tokenizer(tokenizer)  # disable <think> for Qwen3
 
     # Reference model: frozen initial weights for trust-region teacher
     # Also serves as the EMA base for EMA mode
@@ -477,7 +479,8 @@ def main() -> None:
             student_prompt_text = problem.format_prompt()
             student_messages = [{"role": "user", "content": student_prompt_text}]
             student_prompt_formatted = tokenizer.apply_chat_template(
-                student_messages, tokenize=False, add_generation_prompt=True
+                student_messages, tokenize=False, add_generation_prompt=True,
+                enable_thinking=False,
             )
             student_prompt_ids = tokenizer(
                 student_prompt_formatted,
@@ -488,11 +491,11 @@ def main() -> None:
             student_prompt_len = student_prompt_ids.shape[1]
 
             # ---- 2. Rollout: generate G completions one at a time ----
-            # Sequential generation avoids variable-length padding issues.
             model.eval()
             gen_ids_list: list[torch.Tensor] = []
             with torch.no_grad():
-                for _ in range(args.num_generations):
+                for g_idx in range(args.num_generations):
+                    log.info("  Generating completion %d/%d ...", g_idx + 1, args.num_generations)
                     out = model.generate(
                         student_prompt_ids,
                         do_sample=True,
@@ -507,22 +510,47 @@ def main() -> None:
                 tokenizer.decode(g, skip_special_tokens=True)
                 for g in gen_ids_list
             ]
-            log.info("  Generated %d completions, running sandbox ...", len(completions))
+            completion_lens = [len(g) for g in gen_ids_list]
+            log.info(
+                "  Generated %d completions (tokens: %s), running sandbox ...",
+                len(completions), completion_lens,
+            )
 
             # ---- 3. Execute completions in APPS sandbox ----
-            fb_list = [
-                execute_code(c, problem, timeout=args.exec_timeout)
-                for c in completions
-            ]
+            fb_list = []
+            _LOG_SNIP = 600  # chars to show for raw/extracted code in logs
+
+            for c_idx, c in enumerate(completions):
+                log.info("  Sandbox %d/%d ...", c_idx + 1, len(completions))
+                fb = execute_code(c, problem, timeout=args.exec_timeout)
+                fb_list.append(fb)
+                status = "PASS" if fb.all_passed else "FAIL"
+                log.info("    %s (pass_rate=%.3f, %d tests)", status, fb.pass_rate, len(fb.results))
+
+                if not fb.all_passed:
+                    raw_preview = c[: _LOG_SNIP] + ("..." if len(c) > _LOG_SNIP else "")
+                    ext_preview = (fb.extracted_code or "")[: _LOG_SNIP]
+                    if len(fb.extracted_code or "") > _LOG_SNIP:
+                        ext_preview += "..."
+                    log.info("    [FAIL] Raw response (first %d chars):\n%s", _LOG_SNIP, raw_preview)
+                    log.info("    [FAIL] Extracted code executed:\n%s", ext_preview or "(empty)")
+                    if fb.first_failure_stderr:
+                        log.info("    [FAIL] Stderr: %s", fb.first_failure_stderr[:800])
+                    if fb.first_failure_stdout and not fb.first_failure_stderr:
+                        log.info("    [FAIL] Stdout (wrong output): %s", fb.first_failure_stdout[:500])
+
             n_passed = sum(1 for fb in fb_list if fb.all_passed)
             mean_pass_rate = sum(fb.pass_rate for fb in fb_list) / len(fb_list)
             epoch_pass_rates.append(mean_pass_rate)
-            log.info("  Sandbox done: %d/%d passed, pass_rate=%.3f", n_passed, len(fb_list), mean_pass_rate)
+            log.info(
+                "  Sandbox done: %d/%d passed, mean_pass_rate=%.3f",
+                n_passed, len(fb_list), mean_pass_rate,
+            )
 
             # ---- 4. Get old log probs for IS correction ----
-            # Forward pass on rollout sequences before any weight update.
             model.eval()
             old_token_lps: list[Optional[torch.Tensor]] = []
+            log.info("  Computing old log probs for IS correction ...")
             with torch.no_grad():
                 for gen_ids in gen_ids_list:
                     full_ids = torch.cat(
@@ -557,18 +585,37 @@ def main() -> None:
             n_valid = sum(1 for tp in teacher_prompts if tp is not None)
 
             if n_valid == 0:
+                reason = (
+                    "0 passing completions and include_env_feedback=False → "
+                    "no distillation signal. Use --include-env-feedback to learn from execution feedback on failures."
+                )
+                log.info(
+                    "  Skipping gradient step: %d valid teacher prompts. %s",
+                    n_valid, reason,
+                )
                 global_step += 1
                 epoch_losses.append(0.0)
                 continue
+
+            log.info(
+                "  Building gradients: %d/%d completions have valid teacher prompts",
+                n_valid, len(completions),
+            )
 
             # ---- 6. Training: gradient accumulation over valid completions ----
             model.train()
             optimizer.zero_grad()
             total_loss = 0.0
+            n_accumulated = 0
 
-            for gen_ids, tp, old_lp in zip(gen_ids_list, teacher_prompts, old_token_lps):
+            for comp_idx, (gen_ids, tp, old_lp) in enumerate(
+                zip(gen_ids_list, teacher_prompts, old_token_lps)
+            ):
                 if tp is None or old_lp is None:
                     continue
+
+                n_accumulated += 1
+                log.info("  Backprop completion %d/%d (seq_len=%d) ...", comp_idx + 1, len(completions), gen_ids.shape[0])
 
                 # --- 6a. Student forward on [student_prompt + completion] (with grad) ---
                 s_full = torch.cat(
@@ -586,7 +633,8 @@ def main() -> None:
                 # --- 6b. Teacher forward on [teacher_prompt + completion] (no grad) ---
                 teacher_messages = [{"role": "user", "content": tp}]
                 teacher_prompt_formatted = tokenizer.apply_chat_template(
-                    teacher_messages, tokenize=False, add_generation_prompt=True
+                    teacher_messages, tokenize=False, add_generation_prompt=True,
+                    enable_thinking=False,
                 )
                 teacher_prompt_ids = tokenizer(
                     teacher_prompt_formatted,
@@ -637,6 +685,13 @@ def main() -> None:
                 # EMA teacher update after each optimizer step
                 if args.teacher_regularization == "ema" and ema_model is not None:
                     update_ema(ema_model, model, args.teacher_update_rate)
+
+                log.info(
+                    "  Step complete: loss=%.4f (from %d completions), lr=%.2e",
+                    total_loss, n_accumulated, scheduler.get_last_lr()[0],
+                )
+            else:
+                log.info("  Step complete: no valid gradients (total_loss=0)")
 
             global_step += 1
             epoch_losses.append(total_loss)

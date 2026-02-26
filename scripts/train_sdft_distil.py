@@ -39,6 +39,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from distil_config import DistilConfig
 from distil_trainer import DistilTrainer
 from seca.data.apps import load_apps
+from seca.utils.tokenizer import make_no_thinking_tokenizer
 
 log = logging.getLogger(__name__)
 
@@ -49,9 +50,11 @@ log = logging.getLogger(__name__)
 _TEACHER_TEMPLATE = """{question}
 
 This is an example for a response to the question:
+<start_code>
 {gold_solution}
+<end_code>
 
-Now answer with a complete Python solution of your own."""
+Now answer with a complete Python solution of your own. Your response must contain ONLY executable code enclosed between <start_code> and <end_code> tokens."""
 
 
 def build_hf_dataset(problems, seed: int = 42) -> Dataset:
@@ -211,6 +214,7 @@ def main() -> None:
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    make_no_thinking_tokenizer(tokenizer)  # disable <think> for Qwen3
 
     # ------------------------------------------------------------------
     # W&B
@@ -274,7 +278,7 @@ def main() -> None:
         mask_truncated_completions=False,     # keep loss signal when many completions hit max_tokens
         # ----- Epochs / checkpointing -----
         num_train_epochs=args.epochs,
-        save_steps=100,
+        save_steps=75,
         save_total_limit=3,
         logging_steps=1,
         seed=args.seed,
@@ -291,15 +295,26 @@ def main() -> None:
         processing_class=tokenizer,
     )
 
+    total_steps = len(dataset) * args.epochs
     log.info(
-        "Starting SDFT training: %d problems | %d epochs | G=%d rollouts/prompt | LR=%.1e",
+        "Starting SDFT training: %d problems | %d epochs | G=%d rollouts | LR=%.1e | save_every=%d steps",
         len(problems),
         args.epochs,
         args.num_generations,
         args.lr,
+        config.save_steps,
     )
-    trainer.train()
-    log.info("Done. Checkpoint saved → %s", args.output_dir)
+    log.info("Total steps: %d | Checkpoints: %s", total_steps, args.output_dir)
+
+    output = trainer.train()
+
+    log.info(
+        "Training complete. Runtime=%.1fs | samples/s=%.2f | final_loss=%.4f",
+        output.metrics.get("train_runtime", 0),
+        output.metrics.get("train_samples_per_second", 0),
+        output.metrics.get("train_loss", 0),
+    )
+    log.info("Checkpoint saved → %s", args.output_dir)
 
 
 if __name__ == "__main__":
