@@ -1,8 +1,10 @@
-"""APPS loader — codeparrot/apps (10k problems, 3 difficulty tiers)."""
+"""APPS loader — local JSONL first, HuggingFace fallback."""
 from __future__ import annotations
 import json
-from datasets import load_dataset
+from pathlib import Path
 from seca.data.problem import CodeProblem, TestCase
+
+LOCAL_DIR = Path(__file__).resolve().parents[2] / "data"
 
 
 def load_apps(
@@ -10,22 +12,15 @@ def load_apps(
     difficulty: str | None = None,
     max_problems: int | None = None,
 ) -> list[CodeProblem]:
-    ds = load_dataset("codeparrot/apps", split=split)
-    if difficulty:
-        ds = ds.filter(lambda x: x.get("difficulty") == difficulty)
+    rows = _load_rows(split, difficulty)
     if max_problems:
-        ds = ds.select(range(min(max_problems, len(ds))))
+        rows = rows[:max_problems]
 
     problems: list[CodeProblem] = []
-    for row in ds:
-        # parse solutions list
+    for row in rows:
         sols = _safe_json(row.get("solutions", "[]"))
         gold = sols[0] if isinstance(sols, list) and sols else ""
-
-        # parse test IO
-        io = _safe_json(row.get("input_output", "{}"))
-        tests = _build_tests(io)
-
+        tests = _build_tests(_safe_json(row.get("input_output", "{}")))
         problems.append(CodeProblem(
             problem_id=str(row.get("problem_id", "")),
             prompt=row.get("question", ""),
@@ -36,6 +31,28 @@ def load_apps(
             source="apps",
         ))
     return problems
+
+
+def _load_rows(split: str, difficulty: str | None) -> list[dict]:
+    # try local JSONL first (e.g. data/apps_test_introductory.jsonl)
+    if difficulty:
+        local = LOCAL_DIR / f"apps_{split}_{difficulty}.jsonl"
+        if local.exists():
+            return [json.loads(l) for l in local.read_text().splitlines() if l.strip()]
+
+    local_full = LOCAL_DIR / f"apps_{split}.jsonl"
+    if local_full.exists():
+        rows = [json.loads(l) for l in local_full.read_text().splitlines() if l.strip()]
+        if difficulty:
+            rows = [r for r in rows if r.get("difficulty") == difficulty]
+        return rows
+
+    # fallback: download from HuggingFace
+    from datasets import load_dataset
+    ds = load_dataset("codeparrot/apps", split=split)
+    if difficulty:
+        ds = ds.filter(lambda x: x.get("difficulty") == difficulty)
+    return list(ds)
 
 
 def _safe_json(raw) -> any:
