@@ -7,23 +7,27 @@ model:
 
 training:
   mode: "omni"                # sft | sdft | sdpo | omni | grpo
-  lr: 1e-5
+  lr: 1e-6                   # SDPO paper Table 12
+  weight_decay: 0.01         # SDPO paper Table 12
   num_epochs: 3
-  num_samples: 4              # K on-policy rollouts per problem
-  max_grad_norm: 1.0
+  num_samples: 4             # K on-policy rollouts per problem
+  max_grad_norm: 1.0         # SDPO paper Table 12
+  ema_alpha: 0.01            # EMA teacher: ϕ ← 0.99·ϕ + 0.01·θ
   checkpoint_dir: "checkpoints/"
   eval_every_epoch: 1
 
-# Shared distillation temperatures (used by sdft, sdpo, omni sub-operators)
-sdft: { temperature_student: 1.0, temperature_teacher: 0.7, kl_weight: 0.5 }
-sdpo: { temperature_student: 1.0, temperature_teacher: 0.7, kl_weight: 0.5 }
+# SDFT: topk=100 per description
+sdft: { temperature_student: 1.0, temperature_teacher: 0.7, kl_weight: 0.5, topk: 100 }
+
+# SDPO: topk=20 per SDPO paper Table 12
+sdpo: { temperature_student: 1.0, temperature_teacher: 0.7, kl_weight: 0.5, topk: 20 }
 
 omni:
-  alpha_sdft: 0.4             # L = α·KL_sdft + β·KL_sdpo + γ·NLL_gold
+  alpha_sdft: 0.4            # L = α·KL_sdft + β·KL_sdpo + γ·NLL_gold
   beta_sdpo: 0.4
   gamma_nll: 0.2
-  sdft: { temperature_student: 1.0, temperature_teacher: 0.7, kl_weight: 1.0 }
-  sdpo: { temperature_student: 1.0, temperature_teacher: 0.7, kl_weight: 1.0 }
+  sdft: { temperature_student: 1.0, temperature_teacher: 0.7, kl_weight: 1.0, topk: 100 }
+  sdpo: { temperature_student: 1.0, temperature_teacher: 0.7, kl_weight: 1.0, topk: 20 }
 
 data:
   dataset: "apps"             # apps | livecodebench | kernelbench

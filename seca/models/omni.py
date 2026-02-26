@@ -4,6 +4,7 @@ from seca.models.base import BaseModel
 from seca.models.sdft import SDFTOperator
 from seca.models.sdpo import SDPOOperator
 from seca.data.problem import CodeProblem
+from seca.sandbox.executor import FeedbackBundle
 
 
 class OmniTeacher:
@@ -16,11 +17,11 @@ class OmniTeacher:
 
     def loss(self, model: BaseModel, teacher: BaseModel,
              problems: list[CodeProblem], completions: list[str],
-             feedbacks: list[str]) -> tuple:
+             feedback_bundles: list[FeedbackBundle]) -> tuple:
         metrics = {}
         l_sdft, m = self.sdft.loss(model, teacher, problems, completions)
         metrics.update(m)
-        l_sdpo, m = self.sdpo.loss(model, teacher, problems, completions, feedbacks)
+        l_sdpo, m = self.sdpo.loss(model, teacher, problems, completions, feedback_bundles)
         metrics.update(m)
 
         gold = [f"{p.format_prompt()}\n{p.gold_solution}" for p in problems]

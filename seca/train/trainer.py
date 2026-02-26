@@ -1,4 +1,8 @@
-"""Training loop: SFT, SDFT, SDPO, Omni, GRPO — with checkpoints + eval."""
+"""Training loop: SFT, SDFT, SDPO, Omni, GRPO — with checkpoints + eval.
+
+SDFT/SDPO use EMA teacher (α=0.01), AdamW (lr=1e-6, weight_decay=0.01),
+gradient clipping 1.0, and per-step EMA update.
+"""
 from __future__ import annotations
 import json, logging, time
 from pathlib import Path
@@ -15,20 +19,37 @@ from seca.eval.metrics import evaluate_problems
 log = logging.getLogger(__name__)
 
 
+def _ema_update(ema_model: BaseModel, model: BaseModel, alpha: float = 0.01):
+    """Update EMA teacher: ϕ ← (1-α)·ϕ + α·θ. No gradients."""
+    with torch.no_grad():
+        for p_ema, p_model in zip(ema_model.model.parameters(), model.model.parameters()):
+            p_ema.data.mul_(1.0 - alpha).add_(p_model.data, alpha=alpha)
+
+
 class Trainer:
     def __init__(self, cfg: dict):
         self.cfg = cfg
         self.mode = cfg["training"]["mode"]
         self.model = BaseModel(**cfg["model"])
-        self.optimizer = AdamW(self.model.model.parameters(), lr=cfg["training"]["lr"])
-        self.max_grad_norm = cfg["training"]["max_grad_norm"]
-        self.K = cfg["training"]["num_samples"]
-        self.num_epochs = cfg["training"]["num_epochs"]
+
+        # SDPO paper Table 12: lr=1e-6, weight_decay=0.01
+        train_cfg = cfg["training"]
+        lr = train_cfg.get("lr", 1e-6)
+        weight_decay = train_cfg.get("weight_decay", 0.01)
+        self.optimizer = AdamW(
+            self.model.model.parameters(), lr=lr, weight_decay=weight_decay
+        )
+
+        self.max_grad_norm = train_cfg.get("max_grad_norm", 1.0)
+        self.K = train_cfg.get("num_samples", 4)
+        self.num_epochs = train_cfg.get("num_epochs", 3)
+        self.ema_alpha = train_cfg.get("ema_alpha", 0.01)
+
         self.log_dir = Path(cfg["eval"]["log_dir"])
         self.log_dir.mkdir(parents=True, exist_ok=True)
-        self.ckpt_dir = Path(cfg["training"].get("checkpoint_dir", "checkpoints"))
+        self.ckpt_dir = Path(train_cfg.get("checkpoint_dir", "checkpoints"))
         self.ckpt_dir.mkdir(parents=True, exist_ok=True)
-        self.eval_every = cfg["training"].get("eval_every_epoch", 1)
+        self.eval_every = train_cfg.get("eval_every_epoch", 1)
 
         ops = {"sdft": SDFTOperator, "sdpo": SDPOOperator, "omni": OmniTeacher}
         self.op = ops[self.mode](cfg.get(self.mode, {})) if self.mode in ops else None
@@ -38,11 +59,14 @@ class Trainer:
         history: list[dict] = []
         eval_problems = eval_problems or problems[:20]
 
+        needs_teacher = self.mode in ("sdft", "sdpo", "omni")
+        ema_teacher = self.model.snapshot() if needs_teacher else None
+
         for epoch in range(self.num_epochs):
             t0 = time.time()
             log.info(f"Epoch {epoch+1}/{self.num_epochs}  mode={self.mode}")
 
-            epoch_metrics = self._train_epoch(problems, epoch)
+            epoch_metrics = self._train_epoch(problems, epoch, ema_teacher)
             epoch_metrics["wall_time_s"] = round(time.time() - t0, 1)
 
             # per-epoch eval
@@ -66,12 +90,11 @@ class Trainer:
         self._save_log(history)
         return history
 
-    def _train_epoch(self, problems: list[CodeProblem], epoch: int) -> dict:
+    def _train_epoch(self, problems: list[CodeProblem], epoch: int,
+                     ema_teacher: BaseModel | None) -> dict:
         total_loss = 0.0
         all_metrics: dict[str, float] = {}
-
         needs_teacher = self.mode in ("sdft", "sdpo", "omni")
-        teacher = self.model.snapshot() if needs_teacher else None
 
         for i, problem in enumerate(problems):
             prompts = [problem.format_prompt()] * self.K
@@ -82,11 +105,9 @@ class Trainer:
                 loss, metrics = self._grpo_step(problem, prompts)
             else:
                 completions = self.model.generate(prompts, temperature=0.8)
-                feedbacks = [
-                    execute_code(c, problem).summary for c in completions
-                ]
+                feedback_bundles = [execute_code(c, problem) for c in completions]
                 loss, metrics = self._distill_step(
-                    teacher, problem, completions, feedbacks,
+                    ema_teacher, problem, completions, feedback_bundles,
                 )
 
             self.optimizer.zero_grad()
@@ -95,8 +116,12 @@ class Trainer:
                 self.model.model.parameters(), self.max_grad_norm,
             )
             self.optimizer.step()
-            total_loss += loss.item()
 
+            # EMA update (separate from optimizer, no gradients)
+            if needs_teacher and ema_teacher is not None:
+                _ema_update(ema_teacher, self.model, alpha=self.ema_alpha)
+
+            total_loss += loss.item()
             for k, v in metrics.items():
                 all_metrics[k] = all_metrics.get(k, 0.0) + v
 
@@ -136,11 +161,12 @@ class Trainer:
             "grpo_mean_reward": sum(rewards) / len(rewards),
         }
 
-    def _distill_step(self, teacher, problem, completions, feedbacks):
+    def _distill_step(self, teacher: BaseModel | None, problem: CodeProblem,
+                     completions: list[str], feedback_bundles: list):
         probs = [problem] * len(completions)
         if self.mode == "sdft":
             return self.op.loss(self.model, teacher, probs, completions)
-        return self.op.loss(self.model, teacher, probs, completions, feedbacks)
+        return self.op.loss(self.model, teacher, probs, completions, feedback_bundles)
 
     def _save_checkpoint(self, epoch: int):
         path = self.ckpt_dir / f"{self.mode}_epoch{epoch}.pt"
