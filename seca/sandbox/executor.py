@@ -36,7 +36,7 @@ class FeedbackBundle:
 
     @property
     def all_passed(self) -> bool:
-        return self.pass_rate == 1.0
+        return bool(self.results) and all(r.passed for r in self.results)
 
 
 def execute_code(
@@ -49,12 +49,19 @@ def execute_code(
     If extract=True, extracts Python from ``` blocks."""
     if extract:
         code = extract_code(code)
+    if not code.strip():
+        return FeedbackBundle(
+            results=[ExecResult(passed=False, stdout="", stderr="Empty code")],
+            summary="Error: no executable code found in the completion.",
+            pass_rate=0.0,
+        )
     if not problem.test_cases:
-        # no tests → just try to compile
+        # no tests → just try to compile/run
         r = _run_snippet(code, stdin="", timeout=timeout)
-        summary = "No test cases. " + ("Compiled OK." if not r.stderr else f"Error: {r.stderr[:500]}")
+        r.passed = not r.timed_out and not r.stderr
+        summary = "No test cases. " + ("Compiled OK." if r.passed else f"Error: {r.stderr[:500]}")
         return FeedbackBundle(results=[r], summary=summary,
-                              pass_rate=1.0 if not r.stderr else 0.0)
+                              pass_rate=1.0 if r.passed else 0.0)
 
     results: list[ExecResult] = []
     for tc in problem.test_cases:

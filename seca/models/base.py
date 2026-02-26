@@ -68,7 +68,7 @@ class BaseModel:
         log.info("Loading HuggingFace model for training...")
         self.model = AutoModelForCausalLM.from_pretrained(
             name,
-            torch_dtype=self.dtype,
+            dtype=self.dtype,
             device_map="auto",
             trust_remote_code=True,
         )
