@@ -1,0 +1,6 @@
+[submodule "Self-Distillation"]
+	path = Self-Distillation
+	url = https://github.com/idanshen/Self-Distillation.git
+[submodule "SDPO"]
+	path = SDPO
+	url = https://github.com/lasgroup/SDPO.git
