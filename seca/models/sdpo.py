@@ -161,7 +161,7 @@ class SDPOOperator:
                     passed=fb.all_passed,
                     demo_completion=demo,
                     feedback_truncate_chars=feedback_cap if feedback_cap < len(fb.summary) else None,
-                    demo_truncate_chars=demo_cap if demo_cap < len(demo) and demo else None,
+                    demo_truncate_chars=demo_cap if (demo is not None and demo_cap < len(demo)) else None,
                 )
                 ctx_enc = model.encode([teacher_context])
                 n_ctx = ctx_enc["input_ids"].shape[1]
