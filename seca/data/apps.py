@@ -21,6 +21,9 @@ def load_apps(
         sols = _safe_json(row.get("solutions", "[]"))
         gold = sols[0] if isinstance(sols, list) and sols else ""
         tests = _build_tests(_safe_json(row.get("input_output", "{}")))
+        # skip problems missing gold or tests — unusable for distillation
+        if not gold.strip() or not tests:
+            continue
         problems.append(CodeProblem(
             problem_id=str(row.get("problem_id", "")),
             prompt=row.get("question", ""),

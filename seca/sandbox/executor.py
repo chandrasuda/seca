@@ -59,8 +59,8 @@ def execute_code(
     results: list[ExecResult] = []
     for tc in problem.test_cases:
         r = _run_snippet(code, stdin=tc.input, timeout=timeout)
-        actual = r.stdout.strip()
-        expected = tc.expected_output.strip()
+        actual = "\n".join(l.strip() for l in r.stdout.strip().splitlines())
+        expected = "\n".join(l.strip() for l in tc.expected_output.strip().splitlines())
         r.passed = (actual == expected) and not r.timed_out
         results.append(r)
 
