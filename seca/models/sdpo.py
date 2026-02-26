@@ -104,11 +104,19 @@ class SDPOOperator:
                 t_enc = teacher.encode([teacher_input])
                 t_logits = teacher.model(**t_enc).logits / self.temp_t
 
-            # Completion positions: last len(completion) tokens
-            prompt_enc = model.encode([prompt + "\n"])
-            prompt_len = prompt_enc["input_ids"].shape[1]
-            total_len = s_enc["input_ids"].shape[1]
-            completion_len = total_len - prompt_len
+            # Student completion length: tokens in c appended after the student prompt
+            s_prompt_enc = model.encode([prompt + "\n"])
+            s_prompt_len = s_prompt_enc["input_ids"].shape[1]
+            s_completion_len = s_enc["input_ids"].shape[1] - s_prompt_len
+
+            # Teacher completion length: computed independently to guard against BPE
+            # boundary effects — teacher_context is a longer prefix than the student
+            # prompt, so we never assume the two completion lengths are the same.
+            t_prefix_enc = teacher.encode([teacher_context])
+            t_prefix_len = t_prefix_enc["input_ids"].shape[1]
+            t_completion_len = t_enc["input_ids"].shape[1] - t_prefix_len
+
+            completion_len = min(s_completion_len, t_completion_len)
             if completion_len <= 0:
                 continue
 

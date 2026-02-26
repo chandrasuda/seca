@@ -30,18 +30,18 @@ training:
   checkpoint_dir: "checkpoints/"
   eval_every_epoch: 1
 
-# SDFT: topk=100 per SDFT paper
-sdft: { temperature_student: 1.0, temperature_teacher: 0.7, kl_weight: 0.5, topk: 100 }
+# SDFT: topk=100 per SDFT paper; temperature=1.0 matches paper (no scaling)
+sdft: { temperature_student: 1.0, temperature_teacher: 1.0, kl_weight: 0.5, topk: 100 }
 
-# SDPO: topk=20 per SDPO paper Table 12
-sdpo: { temperature_student: 1.0, temperature_teacher: 0.7, kl_weight: 0.5, topk: 20 }
+# SDPO: topk=20 per SDPO paper Table 12; temperature=1.0 matches paper
+sdpo: { temperature_student: 1.0, temperature_teacher: 1.0, kl_weight: 0.5, topk: 20 }
 
 omni:
   alpha_sdft: 0.4               # L = α·KL_sdft + β·KL_sdpo + γ·NLL_gold
   beta_sdpo: 0.4
   gamma_nll: 0.2
-  sdft: { temperature_student: 1.0, temperature_teacher: 0.7, kl_weight: 1.0, topk: 100 }
-  sdpo: { temperature_student: 1.0, temperature_teacher: 0.7, kl_weight: 1.0, topk: 20 }
+  sdft: { temperature_student: 1.0, temperature_teacher: 1.0, kl_weight: 1.0, topk: 100 }
+  sdpo: { temperature_student: 1.0, temperature_teacher: 1.0, kl_weight: 1.0, topk: 20 }
 
 data:
   dataset: "apps"               # apps | livecodebench | kernelbench

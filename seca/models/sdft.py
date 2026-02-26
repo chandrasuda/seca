@@ -15,7 +15,7 @@ def _kl_divergence_topk(
     teacher_log_probs: torch.Tensor,
     topk: int = 100,
 ) -> torch.Tensor:
-    """Sparse KL(P || Q) using top-K tokens under student; tail term for rest."""
+    """Sparse KL(P_student || P_teacher) using top-K tokens under student; tail term for rest."""
     student_probs = student_log_probs.exp()
 
     # Get top-K indices under student at each position
@@ -40,47 +40,58 @@ def _kl_divergence_topk(
     # Tail term
     kl_tail = p_tail * (p_tail.log() - q_tail.log())
 
-    kl_per_pos = kl_topk + kl_tail
-    return kl_per_pos.mean()
+    return (kl_topk + kl_tail).mean()
 
 
 class SDFTOperator:
     def __init__(self, cfg: dict):
         self.temp_s = cfg.get("temperature_student", 1.0)
-        self.temp_t = cfg.get("temperature_teacher", 0.7)
+        self.temp_t = cfg.get("temperature_teacher", 1.0)
         self.kl_weight = cfg.get("kl_weight", 0.5)
         self.topk = cfg.get("topk", 100)
 
-    @torch.no_grad()
-    def _teacher_logits(self, teacher: BaseModel, problems: list[CodeProblem],
-                        completions: list[str]) -> torch.Tensor:
-        # Teacher sees same prompt format as student + gold + student attempt
-        texts = [
-            f"{p.format_prompt()}\n### Optimal Solution\n{p.gold_solution}\n### Student Attempt\n{c}"
-            for p, c in zip(problems, completions)
-        ]
-        return teacher.model(**teacher.encode(texts)).logits
-
-    def loss(self, model: BaseModel, teacher: BaseModel,
-             problems: list[CodeProblem], completions: list[str],
-             ) -> tuple[torch.Tensor, dict]:
+    def loss(
+        self,
+        model: BaseModel,
+        teacher: BaseModel,
+        problems: list[CodeProblem],
+        completions: list[str],
+    ) -> tuple[torch.Tensor, dict]:
         losses = []
         for p, c in zip(problems, completions):
             prompt = p.format_prompt()
+            student_input = f"{prompt}\n{c}"
+            teacher_prefix = (
+                f"{prompt}\n### Optimal Solution\n{p.gold_solution}\n### Student Attempt\n"
+            )
+            teacher_input = teacher_prefix + c
 
-            s_enc = model.encode([f"{prompt}\n{c}"])
+            # Student forward (gradients flow here)
+            s_enc = model.encode([student_input])
             s_logits = model.model(**s_enc).logits / self.temp_s
-            t_logits = self._teacher_logits(teacher, [p], [c]) / self.temp_t
 
-            # Completion positions: last len(completion) tokens
-            prompt_enc = model.encode([prompt + "\n"])
-            prompt_len = prompt_enc["input_ids"].shape[1]
-            total_len = s_enc["input_ids"].shape[1]
-            completion_len = total_len - prompt_len
+            # Teacher forward — keep everything inside no_grad so the temp division
+            # does not create an unnecessary graph node
+            with torch.no_grad():
+                t_enc = teacher.encode([teacher_input])
+                t_logits = teacher.model(**t_enc).logits / self.temp_t
+
+            # Student completion length: tokens in c appended after the student prompt
+            s_prompt_enc = model.encode([f"{prompt}\n"])
+            s_prompt_len = s_prompt_enc["input_ids"].shape[1]
+            s_completion_len = s_enc["input_ids"].shape[1] - s_prompt_len
+
+            # Teacher completion length: computed independently to guard against BPE
+            # boundary effects — the same text can tokenise differently depending on
+            # what precedes it, so we never assume the student count equals the teacher count.
+            t_prefix_enc = teacher.encode([teacher_prefix])
+            t_prefix_len = t_prefix_enc["input_ids"].shape[1]
+            t_completion_len = t_enc["input_ids"].shape[1] - t_prefix_len
+
+            completion_len = min(s_completion_len, t_completion_len)
             if completion_len <= 0:
                 continue
 
-            # Use last completion_len positions for both
             s_lp = F.log_softmax(s_logits[:, -completion_len:, :], dim=-1)
             t_lp = F.log_softmax(t_logits[:, -completion_len:, :], dim=-1)
 
